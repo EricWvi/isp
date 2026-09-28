@@ -1,26 +1,50 @@
 server:
+  # 管理页面地址；监听地址必须是本机地址。
   http_listen: 127.0.0.1:8080
+  # 代理监听端口必须 >= 30000；启用的监听地址不能重复。
   socks5_listen: 127.0.0.1:30001
   socks5_enabled: true
   http_proxy_listen: 127.0.0.1:30002
   http_proxy_enabled: false
+  # SQLite 数据库路径；相对路径相对于进程工作目录。
   database: ./data/isp.db
 health_check:
+  # 经上游代理访问的 HTTP/HTTPS 地址；任何 HTTP 状态码均视为链路可用。
   url: https://www.gstatic.com/generate_204
   interval_min: 5m
   interval_max: 8m
   timeout: 15s
   failure_threshold: 3
+  # 退避上限，不能小于 interval_max。
   backoff_max: 1h
 providers:
   - id: proxy-seller
+    # 当前仅支持 proxy-seller。
     type: proxy-seller
+    # 可选；省略时归入 SOCKS5 代理池。可填 socks5 或 http。
     protocol: socks5
     enabled: true
-    # 每个代理可选 udp_capability: unknown | supported | unsupported
-    proxies: []
+    proxies:
+      - id: socks-primary
+        # 可选：管理页面显示的名称。
+        # name: 主代理
+        # 只填域名或 IP，不加 socks5:// 前缀。
+        host: proxy.example.com
+        port: 1080
+        # 替换占位地址后再启用。
+        enabled: false
+        # 可选：上游代理需要认证时填写；password 需要同时填写 username。
+        # username: "your-user"
+        # password: "your-password"
+        # 可选：unknown（默认）、supported 或 unsupported；仅用于 SOCKS5 UDP。
+        # udp_capability: unknown
   - id: http-seller
     type: proxy-seller
     protocol: http
     enabled: true
-    proxies: []
+    proxies:
+      - id: http-primary
+        # 可选：name、username、password 的用法同上。
+        host: http-proxy.example.com
+        port: 8080
+        enabled: false
