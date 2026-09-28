@@ -34,6 +34,11 @@ type Health struct {
 	BackoffStage         int
 }
 
+type ProxyKey struct {
+	ProviderID string
+	ProxyID    string
+}
+
 type Store struct{ db *sql.DB }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -163,6 +168,25 @@ func (s *Store) SaveHealth(ctx context.Context, h Health) error {
 		last_checked_at=excluded.last_checked_at, last_result=excluded.last_result, last_error=excluded.last_error, next_check_at=excluded.next_check_at, backoff_stage=excluded.backoff_stage`,
 		h.ProviderID, h.ProxyID, h.Status, h.ConsecutiveSuccesses, h.ConsecutiveFailures, formatTime(h.LastCheckedAt), h.LastResult, h.LastError, formatTime(h.NextCheckAt), h.BackoffStage)
 	return err
+}
+
+// ForgetHealth removes stale check results after connection details change.
+// The next health scheduler run treats these proxies as unknown and due now.
+func (s *Store) ForgetHealth(ctx context.Context, keys []ProxyKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, key := range keys {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM health WHERE provider_id = ? AND proxy_id = ?`, key.ProviderID, key.ProxyID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func formatTime(v time.Time) string {

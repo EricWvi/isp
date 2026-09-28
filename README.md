@@ -1,6 +1,6 @@
 # IP 池服务
 
-按 [roadmap](docs/roadmap.md) 分阶段实现的单机 IP 池服务。目前完成阶段 1：配置文件、SQLite 运行状态存储及前端工程骨架。尚未启动 SOCKS5 或管理服务。
+按 [roadmap](docs/roadmap.md) 分阶段实现的单机 IP 池服务。目前完成阶段 1 和阶段 2：配置文件、SQLite 运行状态存储、Provider 环形选择及全局当前代理。尚未启动 SOCKS5 或管理服务。
 
 需要 Go 1.24+ 和 Node.js 20.19+。复制 `config.example.yaml` 为自己的配置文件后，可先验证配置并初始化状态数据库：
 
@@ -20,3 +20,5 @@ npm run build
 ```
 
 当前前端只是工程骨架。生产页面、静态文件嵌入和 API 将在后续阶段接入。
+
+阶段 2 的选路模块位于 `internal/routing`。新连接可读取一次 `Snapshot()`，已确认不可用时会得到“无代理”；手动选择允许选择已启用但尚未确认健康的代理。自动候选只包含健康状态为 `healthy` 的代理，自动切换开关开启时不会立刻轮换。选路行为可用 `go test ./internal/routing ./internal/provider` 无网络验证。

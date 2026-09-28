@@ -231,11 +231,11 @@ providers:
 
 ### 阶段 2：Provider 与全局选路
 
-- [ ] 定义最小 Provider 接口。
-- [ ] 实现 Provider 环形遍历。
-- [ ] 实现 YAML 驱动的 `proxy-seller` Provider 及其内部轮换。
-- [ ] 实现全局当前代理、自动开关、手动选择和手动轮换。
-- [ ] 覆盖无候选、单 Provider、单代理、并发切换和状态恢复测试。
+- [x] 定义最小 Provider 接口。
+- [x] 实现 Provider 环形遍历。
+- [x] 实现 YAML 驱动的 `proxy-seller` Provider 及其内部轮换。
+- [x] 实现全局当前代理、自动开关、手动选择和手动轮换。
+- [x] 覆盖无候选、单 Provider、单代理、并发切换和状态恢复测试。
 
 完成标准：不依赖网络即可通过模块接口验证所有选择与切换语义。
 
