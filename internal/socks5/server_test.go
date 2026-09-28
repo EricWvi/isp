@@ -17,6 +17,7 @@ import (
 	"isp/internal/config"
 	"isp/internal/routing"
 	"isp/internal/state"
+	"isp/internal/tunnel"
 )
 
 type testSelector struct {
@@ -146,7 +147,7 @@ func startMockProxy(t *testing.T, target, username, password string, accepts *at
 				defer destination.Close()
 				conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
 				conn.SetDeadline(time.Time{})
-				relay(context.Background(), conn, destination, 5*time.Second)
+				tunnel.Relay(context.Background(), conn, conn, destination, 5*time.Second)
 			}()
 		}
 	}()
@@ -446,5 +447,43 @@ func TestIdleConnectionIsClosed(t *testing.T) {
 		t.Fatal("idle connection remained open")
 	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 		t.Fatal("client deadline expired before idle connection was closed")
+	}
+}
+
+func TestOneWayTrafficKeepsConnectionOpen(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for range 12 {
+			if _, err := conn.Write([]byte("x")); err != nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	var accepts atomic.Int32
+	upstream := startMockProxy(t, listener.Addr().String(), "", "", &accepts)
+	selector := &testSelector{}
+	selector.set(upstream, "", "")
+	gateway, _, _ := startGateway(t, &Server{Selector: selector, IdleTimeout: 200 * time.Millisecond})
+	client, status := connectClient(t, gateway, 1)
+	defer client.Close()
+	if status != 0 {
+		t.Fatalf("CONNECT status %d", status)
+	}
+	// The client stays silent for longer than the idle timeout while the
+	// target keeps sending, so the relay must stay open.
+	client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	received, err := io.ReadAll(client)
+	if err != nil || len(received) != 12 {
+		t.Fatalf("received %d of 12 bytes, %v", len(received), err)
 	}
 }

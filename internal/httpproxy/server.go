@@ -18,6 +18,7 @@ import (
 
 	"isp/internal/config"
 	"isp/internal/routing"
+	"isp/internal/tunnel"
 )
 
 type Selector interface {
@@ -158,25 +159,8 @@ func (h *Handler) connect(w http.ResponseWriter, r *http.Request, snapshot routi
 	if err := buffered.Flush(); err != nil {
 		return
 	}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	copyHalf := func(dst net.Conn, src io.Reader) {
-		defer wg.Done()
-		_, err := io.Copy(&idleConn{Conn: dst, timeout: durationOr(h.IdleTimeout, 5*time.Minute)}, src)
-		if err != nil {
-			client.Close()
-			upstream.Close()
-			return
-		}
-		if half, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = half.CloseWrite()
-		} else {
-			_ = dst.Close()
-		}
-	}
-	go copyHalf(upstream, &idleReader{reader: buffered, conn: client, timeout: durationOr(h.IdleTimeout, 5*time.Minute)})
-	go copyHalf(client, &idleConn{Conn: upstream, timeout: durationOr(h.IdleTimeout, 5*time.Minute)})
-	wg.Wait()
+	_ = client.SetDeadline(time.Time{})
+	tunnel.Relay(r.Context(), client, buffered, upstream, durationOr(h.IdleTimeout, 5*time.Minute))
 }
 
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, snapshot routing.Snapshot) {
@@ -236,34 +220,6 @@ func stripHopHeaders(header http.Header) {
 	for _, field := range []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Te", "Trailer", "Transfer-Encoding", "Upgrade"} {
 		header.Del(field)
 	}
-}
-
-type idleConn struct {
-	net.Conn
-	timeout time.Duration
-}
-
-func (c *idleConn) Read(p []byte) (int, error) {
-	_ = c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
-	return c.Conn.Read(p)
-}
-
-func (c *idleConn) Write(p []byte) (int, error) {
-	_ = c.Conn.SetWriteDeadline(time.Now().Add(c.timeout))
-	return c.Conn.Write(p)
-}
-
-type idleReader struct {
-	reader  io.Reader
-	conn    net.Conn
-	timeout time.Duration
-}
-
-func (r *idleReader) Read(p []byte) (int, error) {
-	if err := r.conn.SetReadDeadline(time.Now().Add(r.timeout)); err != nil && !errors.Is(err, net.ErrClosed) {
-		return 0, err
-	}
-	return r.reader.Read(p)
 }
 
 func durationOr(value, fallback time.Duration) time.Duration {

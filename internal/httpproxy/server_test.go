@@ -279,3 +279,55 @@ func TestNoSelectedProxyNeverConnectsDirectly(t *testing.T) {
 		t.Fatalf("upstream failure should be 502, got %d", response.StatusCode)
 	}
 }
+
+func TestOneWayTunnelTrafficKeepsCONNECTOpen(t *testing.T) {
+	destination := startStreamingTarget(t, 12, 50*time.Millisecond)
+	var accepts atomic.Int32
+	upstream := startHTTPUpstream(t, destination, "", "", &accepts)
+	selector := &testSelector{}
+	selector.set(upstream, "", "")
+	gateway := startGateway(t, &Handler{Selector: selector, IdleTimeout: 200 * time.Millisecond})
+	conn, err := net.Dial("tcp", gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.WriteString(conn, "CONNECT target.invalid:443 HTTP/1.1\r\nHost: target.invalid:443\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT response %v, %v", response, err)
+	}
+	// The client stays silent for longer than the idle timeout while the
+	// target keeps sending, so the tunnel must stay open.
+	received, err := io.ReadAll(reader)
+	if err != nil || len(received) != 12 {
+		t.Fatalf("received %d of 12 bytes, %v", len(received), err)
+	}
+}
+
+func startStreamingTarget(t *testing.T, chunks int, interval time.Duration) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for range chunks {
+			if _, err := conn.Write([]byte("x")); err != nil {
+				return
+			}
+			time.Sleep(interval)
+		}
+	}()
+	return listener.Addr().String()
+}

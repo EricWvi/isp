@@ -12,6 +12,7 @@ import (
 
 	"isp/internal/config"
 	"isp/internal/routing"
+	"isp/internal/tunnel"
 )
 
 const (
@@ -186,7 +187,7 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		return
 	}
 	client.SetDeadline(time.Time{})
-	relay(ctx, client, upstream, durationOr(s.IdleTimeout, 5*time.Minute))
+	tunnel.Relay(ctx, client, client, upstream, durationOr(s.IdleTimeout, 5*time.Minute))
 }
 
 func (s *Server) report(ctx context.Context, ref routing.Ref, err error) {
@@ -343,48 +344,6 @@ func writeAll(conn net.Conn, data []byte) error {
 		data = data[n:]
 	}
 	return nil
-}
-
-func relay(ctx context.Context, client, upstream net.Conn, timeout time.Duration) {
-	stop := context.AfterFunc(ctx, func() {
-		client.Close()
-		upstream.Close()
-	})
-	defer stop()
-	var wg sync.WaitGroup
-	wg.Add(2)
-	copyHalf := func(dst, src net.Conn) {
-		defer wg.Done()
-		_, err := io.Copy(&idleConn{Conn: dst, timeout: timeout}, &idleConn{Conn: src, timeout: timeout})
-		if err != nil {
-			client.Close()
-			upstream.Close()
-			return
-		}
-		if half, ok := dst.(interface{ CloseWrite() error }); ok {
-			half.CloseWrite()
-		} else {
-			dst.Close()
-		}
-	}
-	go copyHalf(upstream, client)
-	go copyHalf(client, upstream)
-	wg.Wait()
-}
-
-type idleConn struct {
-	net.Conn
-	timeout time.Duration
-}
-
-func (c *idleConn) Read(p []byte) (int, error) {
-	_ = c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
-	return c.Conn.Read(p)
-}
-
-func (c *idleConn) Write(p []byte) (int, error) {
-	_ = c.Conn.SetWriteDeadline(time.Now().Add(c.timeout))
-	return c.Conn.Write(p)
 }
 
 func durationOr(value, fallback time.Duration) time.Duration {
