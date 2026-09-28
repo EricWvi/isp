@@ -1,6 +1,6 @@
 # IP 池服务
 
-按 [roadmap](docs/roadmap.md) 分阶段实现的单机 IP 池服务。目前完成阶段 1 至 5：配置与状态存储、Provider 选路、本地 SOCKS5 TCP `CONNECT`、健康检查与自动故障切换，以及本地管理页面。
+按 [roadmap](docs/roadmap.md) 分阶段实现的单机 IP 池服务。包含配置与状态存储、Provider 选路、本地 SOCKS5 TCP `CONNECT`、健康检查与自动故障切换，以及本地管理页面。
 
 需要 Go 1.24+ 和 Node.js 20.19+。复制 `config.example.yaml` 为自己的配置文件后，可先验证配置并初始化状态数据库：
 
@@ -38,3 +38,27 @@ go run ./cmd/isp serve config.example.yaml
 入口只接受本地 SOCKS5 无认证客户端的 TCP `CONNECT`，上游可无认证或使用用户名密码。客户端请求中的域名会交给上游解析；没有当前代理或当前代理确认不可用时会返回 SOCKS5 失败，不会直连目标。
 
 健康检查经各自的 SOCKS5 上游访问 `health_check.url`。任何 HTTP 状态码都表示代理链路可用；默认连续失败 3 次才标记不可用。正常检查间隔、超时、失败阈值和退避上限均由 YAML 控制，状态与下次检查时间保存在 SQLite。SOCKS 上游连接错误会提前安排复检，不会直接增加失败计数。自动切换开启后，只有当前代理确认不可用才会切换。
+
+## 发布与运行
+
+在 Linux 或 macOS 上安装 Go 1.24+、Node.js 20.19+ 和 npm 后，从仓库根目录执行：
+
+```sh
+bash scripts/release.sh
+./release/isp config-check ./config.yaml
+./release/isp serve ./config.yaml
+```
+
+发布脚本使用锁定的 npm 依赖先重建 `frontend/dist`，运行 Go 测试，再以 `CGO_ENABLED=0`、`-trimpath` 和固定空 build ID 编译 `release/isp`。发布时只需复制该可执行文件、自己的 YAML 配置和 SQLite 状态文件；运行时不需要 Node.js 或单独的前端目录。脚本按当前主机系统与架构编译，Linux 和 macOS 需分别执行。服务以 JSON 日志输出到标准错误；正常收到 SIGINT/SIGTERM 时停止接受新连接、关闭活动 SOCKS5 连接、等待 HTTP 请求退出并关闭数据库。管理配置已写入 YAML、但运行时更新失败时会报错退出，应先检查日志并重启以重新加载 YAML。
+
+配置文件可能包含上游密码，建议权限为 `0600`，且不要提交真实凭据。`server.database` 的相对路径相对于启动时的工作目录；使用服务管理器时请固定工作目录，或在 YAML 中使用绝对路径。监听地址只允许本机地址，不要把无认证的管理页面转发到公网。启动前可用 `config-check` 校验 YAML；若 SQLite 文件损坏，服务会报错而不会自动清空它。
+
+备份前优雅停止服务，再把 YAML 和 SQLite 数据库文件作为同一份快照复制保存。SQLite 使用 WAL 模式；如果必须在线备份，应使用 SQLite 在线备份 API，不能只复制运行中的 `.db` 文件而忽略 `-wal`。恢复时也先停止服务，保留故障现场副本，再将同一份备份中的 YAML 和数据库放回原路径，运行 `config-check` 后启动。若仅恢复 YAML 而不恢复数据库，运行时选择与健康状态可能对应不上当前代理清单；服务会按稳定 ID 重新关联，无法关联的旧状态不会参与选路。磁盘写满时应先释放空间并检查日志，再重启服务确认持久化状态。
+
+可用以下命令验证本地 SOCKS5 客户端（先在 YAML 中填入可用上游并等待健康检查成功）：
+
+```sh
+curl --fail --show-error --socks5-hostname 127.0.0.1:30001 https://example.com/
+```
+
+`--socks5-hostname` 使域名由上游解析。自动化测试也会在安装了 curl 的系统上覆盖无认证和用户名密码认证两种上游。macOS 上仍需运行发布脚本和该客户端命令做实际系统验收。

@@ -29,6 +29,7 @@ dist-ssr
 packages/contracts/.test-dist/
 /.data
 /data/
+/release/
 .tmp
 *.tsbuildinfo
 

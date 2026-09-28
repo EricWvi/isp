@@ -4,6 +4,9 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -216,6 +219,32 @@ func TestTCPConnectThroughBothUpstreamAuthModes(t *testing.T) {
 			roundTrip(t, client, "hello")
 			if accepts.Load() != 1 {
 				t.Fatalf("upstream accepts: %d", accepts.Load())
+			}
+		})
+	}
+}
+
+func TestCurlSOCKS5HostnameCompatibility(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl is not installed")
+	}
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("through-proxy"))
+	}))
+	defer target.Close()
+	for _, tc := range []struct{ name, user, pass string }{{"no-auth", "", ""}, {"user-password", "alice", "secret"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var accepts atomic.Int32
+			upstream := startMockProxy(t, target.Listener.Addr().String(), tc.user, tc.pass, &accepts)
+			selector := &testSelector{}
+			selector.set(upstream, tc.user, tc.pass)
+			gateway, _, _ := startGateway(t, &Server{Selector: selector})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "curl", "--silent", "--show-error", "--fail", "--noproxy", "", "--socks5-hostname", gateway, "http://target.invalid/")
+			output, err := cmd.CombinedOutput()
+			if err != nil || string(output) != "through-proxy" || accepts.Load() != 1 {
+				t.Fatalf("curl via gateway: %q, %v, accepts=%d", output, err, accepts.Load())
 			}
 		})
 	}

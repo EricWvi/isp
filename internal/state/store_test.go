@@ -2,7 +2,10 @@ package state
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,5 +41,46 @@ func TestStateSurvivesReopen(t *testing.T) {
 	gotHealth, err := s.LoadHealth(ctx)
 	if err != nil || len(gotHealth) != 1 || gotHealth[0] != wantHealth {
 		t.Fatalf("health: got %+v, %v", gotHealth, err)
+	}
+}
+
+func TestCorruptDatabaseFailsWithoutReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "isp.db")
+	bad := []byte("not a SQLite database")
+	if err := os.WriteFile(path, bad, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if store, err := Open(context.Background(), path); err == nil {
+		store.Close()
+		t.Fatal("corrupt database was accepted")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(bad) {
+		t.Fatalf("corrupt file was overwritten: %q, %v", got, err)
+	}
+}
+
+func TestDatabaseFullDoesNotPublishPartialHealth(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "isp.db")
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var pages int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, "PRAGMA max_page_count = "+fmt.Sprint(pages)); err != nil {
+		t.Fatal(err)
+	}
+	err = s.SaveHealth(ctx, Health{ProviderID: "seller", ProxyID: "first", Status: "suspect", LastError: strings.Repeat("x", 1<<20)})
+	if err == nil {
+		t.Fatal("expected database-full error")
+	}
+	health, loadErr := s.LoadHealth(ctx)
+	if loadErr != nil || len(health) != 0 {
+		t.Fatalf("partial health write: %+v, %v", health, loadErr)
 	}
 }

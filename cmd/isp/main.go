@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -23,12 +23,12 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		slog.New(slog.NewJSONHandler(os.Stderr, nil)).Error("command failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
+func run(args []string) (runErr error) {
 	if len(args) < 2 {
 		return usage()
 	}
@@ -62,7 +62,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close state database: %w", err))
+		}
+	}()
 	if command == "state-init" {
 		fmt.Println("state database ready")
 		return nil
@@ -107,20 +111,26 @@ func run(args []string) error {
 	defer httpListener.Close()
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	fatal := make(chan error, 1)
 	app := &admin.App{Config: file, Router: router, Health: manager, Store: store, OnFatal: func(err error) {
-		log.Printf("management update failed after YAML write: %v", err)
+		logger.Error("management update failed after YAML write", "error", err)
+		select {
+		case fatal <- err:
+		default:
+		}
 		cancel()
 	}}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", app.Handler())
 	mux.Handle("/", static)
 	httpServer := &http.Server{Handler: admin.LocalOnly(mux), ReadHeaderTimeout: 5 * time.Second}
-	log.Printf("SOCKS5 listening on %s", listener.Addr())
-	log.Printf("management page listening on %s", httpListener.Addr())
+	logger.Info("SOCKS5 listening", "address", listener.Addr().String())
+	logger.Info("management page listening", "address", httpListener.Addr().String())
 	server := &socks5.Server{Selector: router, OnUpstreamError: func(ref routing.Ref, err error) {
-		log.Printf("upstream %s/%s: %v", ref.ProviderID, ref.ProxyID, err)
+		logger.Warn("upstream connection failed", "provider_id", ref.ProviderID, "proxy_id", ref.ProxyID, "error", err)
 		if reportErr := manager.ReportConnectionError(ctx, ref); reportErr != nil {
-			log.Printf("schedule health recheck for %s/%s: %v", ref.ProviderID, ref.ProxyID, reportErr)
+			logger.Error("schedule health recheck failed", "provider_id", ref.ProviderID, "proxy_id", ref.ProxyID, "error", reportErr)
 		}
 	}}
 	results := make(chan error, 3)
@@ -133,23 +143,30 @@ func run(args []string) error {
 		}
 		results <- err
 	}()
+	shutdownDone := make(chan error, 1)
 	go func() {
 		<-serveCtx.Done()
 		shutdownCtx, stopShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stopShutdown()
-		_ = httpServer.Shutdown(shutdownCtx)
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			_ = httpServer.Close()
+			shutdownDone <- fmt.Errorf("shutdown management server: %w", err)
+			return
+		}
+		shutdownDone <- nil
 	}()
 	first := <-results
 	cancel()
-	second := <-results
-	third := <-results
-	if first != nil {
-		return first
+	runErr = errors.Join(first, <-results, <-results, <-shutdownDone)
+	select {
+	case err := <-fatal:
+		runErr = errors.Join(runErr, fmt.Errorf("management state diverged from YAML: %w", err))
+	default:
 	}
-	if second != nil {
-		return second
+	if runErr == nil {
+		logger.Info("service stopped")
 	}
-	return third
+	return runErr
 }
 
 func usage() error {

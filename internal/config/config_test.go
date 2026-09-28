@@ -52,6 +52,21 @@ func TestDecodeDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestCorruptConfigIsRejectedWithoutOverwrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	bad := []byte("server: [unterminated\n")
+	if err := os.WriteFile(path, bad, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("corrupt configuration was accepted")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(bad) {
+		t.Fatalf("corrupt configuration was overwritten: %q, %v", got, err)
+	}
+}
+
 func TestFileUpdateSerializesAndKeepsFailedChangeOutOfMemory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(sample), 0600); err != nil {
