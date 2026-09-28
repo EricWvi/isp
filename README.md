@@ -78,7 +78,7 @@ bash scripts/release.sh
 curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | bash
 ```
 
-脚本自动选择 `amd64` 或 `arm64`，首次安装时创建程序、配置、数据和 systemd 用户服务目录，写入空代理池的默认配置并启动管理页面。默认关闭 SOCKS5 和 HTTP 两个代理入口。再次执行会保留配置与数据库，先停止正在运行的服务，替换程序后重新启动；原本未运行的服务仍保持停止。脚本会尝试开启 linger，让用户未登录时也能开机启动；若当前账号无法授权，会提示补执行的命令。首次安装后请编辑 `~/.config/isp-proxy/config.yaml`，填写上游代理并按需将 `server.socks5_enabled`、`server.http_proxy_enabled` 改为 `true`，再运行 `systemctl --user restart isp-proxy.service`。日志可通过 `journalctl --user -u isp-proxy.service -f` 查看。
+脚本自动选择 `amd64` 或 `arm64`，首次安装时创建程序、配置、数据和 systemd 用户服务目录，写入空代理池的默认配置并启动管理页面。默认关闭 SOCKS5 和 HTTP 两个代理入口。再次执行会保留配置与数据库，先停止正在运行的服务，替换程序后重新启动；原本未运行的服务仍保持停止。脚本会尝试开启 linger，让用户未登录时也能开机启动；必要时会请求 sudo 密码，若当前账号无法授权则提示补执行的命令。首次安装后请编辑 `~/.config/isp-proxy/config.yaml`，填写上游代理并按需将 `server.socks5_enabled`、`server.http_proxy_enabled` 改为 `true`，再运行 `systemctl --user restart isp-proxy.service`。日志可通过 `journalctl --user -u isp-proxy.service -f` 查看。
 
 服务模板为 [packaging/isp-proxy.service.in](packaging/isp-proxy.service.in)，安装到 `~/.config/systemd/user/isp-proxy.service`；每次更新会覆盖该服务文件。工作目录固定为 `~/.local/share/isp-proxy`，示例中的 `server.database: ./data/isp.db` 会写入该目录下的 `data/isp.db`。如需安装指定版本，可使用 `curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | ISP_PROXY_VERSION=v1.0.0 bash`，把版本号换成已发布的 tag。
 

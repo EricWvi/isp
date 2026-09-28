@@ -49,11 +49,9 @@ enable_linger() {
     return 0
   fi
   if command -v sudo >/dev/null 2>&1; then
-    if [[ -t 2 ]]; then
-      sudo loginctl enable-linger "$user_name"
-    else
-      sudo -n loginctl enable-linger "$user_name" 2>/dev/null
-    fi
+    # sudo reads its password from the terminal even when bash reads the script
+    # from a curl pipe. Let it prompt instead of silently failing with -n.
+    sudo loginctl enable-linger "$user_name"
   else
     return 1
   fi

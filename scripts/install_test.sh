@@ -34,13 +34,29 @@ cat >"$test_dir/bin/loginctl" <<'SH'
 case "$1" in
   show-user)
     if [[ ${TEST_REQUIRE_LINGER:-} == 1 && ! -f $TEST_LINGER_FILE ]]; then
+      if [[ ${TEST_REQUIRE_SUDO:-} == 1 ]]; then
+        echo 'Failed to get user: user is not logged in or lingering' >&2
+        exit 1
+      fi
       echo no
     else
       echo yes
     fi
     ;;
-  enable-linger) touch "$TEST_LINGER_FILE" ;;
+  enable-linger)
+    [[ ${TEST_REQUIRE_SUDO:-} != 1 ]] || exit 1
+    touch "$TEST_LINGER_FILE"
+    ;;
 esac
+SH
+cat >"$test_dir/bin/sudo" <<'SH'
+#!/usr/bin/env bash
+if [[ $1 == -n ]]; then
+  echo 'sudo needs an interactive password' >&2
+  exit 1
+fi
+[[ $1 == loginctl && $2 == enable-linger ]]
+touch "$TEST_LINGER_FILE"
 SH
 cat >"$test_dir/bin/curl" <<'SH'
 #!/usr/bin/env bash
@@ -88,3 +104,16 @@ fi
 grep -q '已安装 v0.1.0' "$test_dir/second-output"
 [[ -f $test_dir/linger-enabled ]]
 echo 'installer test passed: user manager starts after enabling linger'
+
+mkdir -p "$test_dir/third-home"
+if ! env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS \
+  HOME="$test_dir/third-home" PATH="$test_dir/bin:$PATH" \
+  TEST_REQUIRE_LINGER=1 TEST_REQUIRE_SUDO=1 \
+  TEST_LINGER_FILE="$test_dir/sudo-linger-enabled" \
+  bash "$repo_dir/scripts/install.sh" >"$test_dir/third-output" 2>&1; then
+  cat "$test_dir/third-output" >&2
+  exit 1
+fi
+grep -q '已安装 v0.1.0' "$test_dir/third-output"
+[[ -f $test_dir/sudo-linger-enabled ]]
+echo 'installer test passed: no user session, sudo required for linger'
