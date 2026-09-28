@@ -31,9 +31,51 @@ for command_name in curl systemctl loginctl install mktemp; do
     exit 1
   fi
 done
-if ! systemctl --user show-environment >/dev/null 2>&1; then
-  echo '无法连接 systemd 用户管理器，请先以目标用户登录后重试。' >&2
-  exit 1
+
+connect_user_manager() {
+  if systemctl --user show-environment >/dev/null 2>&1; then
+    return 0
+  fi
+  # Some SSH sessions omit these variables even when the user manager exists.
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+  systemctl --user show-environment >/dev/null 2>&1
+}
+linger_enabled() {
+  [[ $(loginctl show-user "$user_name" -p Linger --value 2>/dev/null || true) == yes ]]
+}
+enable_linger() {
+  if linger_enabled || loginctl enable-linger "$user_name" >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    if [[ -t 2 ]]; then
+      sudo loginctl enable-linger "$user_name"
+    else
+      sudo -n loginctl enable-linger "$user_name" 2>/dev/null
+    fi
+  else
+    return 1
+  fi
+}
+
+if ! connect_user_manager; then
+  if ! enable_linger; then
+    echo "无法启动 systemd 用户管理器；请执行 sudo loginctl enable-linger $user_name 后重试。" >&2
+    exit 1
+  fi
+  connected=false
+  for ((attempt = 0; attempt < 10; attempt++)); do
+    if connect_user_manager; then
+      connected=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ $connected == false ]]; then
+    echo '已尝试启用 linger，但仍无法连接 systemd 用户管理器；请检查主机的 user@ 服务和用户总线。' >&2
+    exit 1
+  fi
 fi
 
 version=${ISP_PROXY_VERSION:-}
@@ -136,15 +178,9 @@ elif [[ $was_active == true ]]; then
 fi
 deployment_started=false
 
-if [[ $(loginctl show-user "$user_name" -p Linger --value 2>/dev/null || true) != yes ]]; then
-  if command -v sudo >/dev/null 2>&1; then
-    if [[ -t 2 ]]; then
-      sudo loginctl enable-linger "$user_name" || true
-    else
-      sudo -n loginctl enable-linger "$user_name" 2>/dev/null || true
-    fi
-  fi
-  if [[ $(loginctl show-user "$user_name" -p Linger --value 2>/dev/null || true) != yes ]]; then
+if ! linger_enabled; then
+  enable_linger || true
+  if ! linger_enabled; then
     echo "要在未登录时开机启动，请执行: sudo loginctl enable-linger $user_name" >&2
   fi
 fi
