@@ -34,6 +34,7 @@ type Handler struct {
 	OnUpstreamError func(routing.Ref, error)
 	mu              sync.Mutex
 	tunnels         map[net.Conn]net.Conn
+	transports      map[string]*http.Transport
 	closed          bool
 }
 
@@ -184,12 +185,7 @@ func (h *Handler) connect(w http.ResponseWriter, r *http.Request, snapshot routi
 }
 
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, snapshot routing.Snapshot) {
-	transport := &http.Transport{
-		Proxy:                 http.ProxyURL(proxyURL(snapshot.Proxy)),
-		DisableKeepAlives:     true,
-		ResponseHeaderTimeout: durationOr(h.DialTimeout, 10*time.Second),
-	}
-	defer transport.CloseIdleConnections()
+	transport := h.transport(snapshot.Proxy)
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
 	out.Header = r.Header.Clone()
@@ -221,6 +217,32 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, snapshot routi
 	_, _ = io.Copy(w, response.Body)
 }
 
+// transport keeps one pool of upstream connections per proxy address and
+// credentials, so plain HTTP requests reuse connections instead of dialing and
+// authenticating each time.
+func (h *Handler) transport(proxy config.Proxy) *http.Transport {
+	upstream := proxyURL(proxy)
+	key := upstream.String()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if transport := h.transports[key]; transport != nil {
+		return transport
+	}
+	if h.transports == nil {
+		h.transports = make(map[string]*http.Transport)
+	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyURL(upstream),
+		ResponseHeaderTimeout: durationOr(h.DialTimeout, 10*time.Second),
+		// Pass the client's encoding through untouched.
+		DisableCompression:  true,
+		MaxIdleConnsPerHost: 32,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	h.transports[key] = transport
+	return transport
+}
+
 func (h *Handler) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -228,6 +250,9 @@ func (h *Handler) Close() {
 	for client, upstream := range h.tunnels {
 		_ = client.Close()
 		_ = upstream.Close()
+	}
+	for _, transport := range h.transports {
+		transport.CloseIdleConnections()
 	}
 }
 

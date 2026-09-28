@@ -410,3 +410,33 @@ func TestCONNECTClientHalfCloseKeepsResponse(t *testing.T) {
 		t.Fatalf("half-close response %q, %v", received, err)
 	}
 }
+
+func TestForwardReusesUpstreamConnection(t *testing.T) {
+	var mu sync.Mutex
+	var remotes []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remotes = append(remotes, r.RemoteAddr)
+		mu.Unlock()
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+	selector := &testSelector{}
+	selector.set(strings.TrimPrefix(upstream.URL, "http://"), "", "")
+	gateway := startGateway(t, &Handler{Selector: selector})
+	proxyURL, _ := url.Parse("http://" + gateway)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 3 * time.Second}
+	for _, path := range []string{"http://one.invalid/", "http://two.invalid/"} {
+		response, err := client.Get(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(remotes) != 2 || remotes[0] != remotes[1] {
+		t.Fatalf("upstream connections: %v", remotes)
+	}
+}
