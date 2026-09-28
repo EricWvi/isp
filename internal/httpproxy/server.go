@@ -37,6 +37,16 @@ type Handler struct {
 	closed          bool
 }
 
+// Server returns an HTTP server for h. IdleTimeout also bounds how long a
+// keep-alive client connection may wait between requests.
+func (h *Handler) Server() *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       durationOr(h.IdleTimeout, 5*time.Minute),
+	}
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.Selector == nil {
 		http.Error(w, "proxy unavailable", http.StatusBadGateway)

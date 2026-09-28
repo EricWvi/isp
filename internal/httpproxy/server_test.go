@@ -331,3 +331,36 @@ func startStreamingTarget(t *testing.T, chunks int, interval time.Duration) stri
 	}()
 	return listener.Addr().String()
 }
+
+func TestIdleKeepAliveClientConnectionIsClosed(t *testing.T) {
+	h := &Handler{IdleTimeout: 100 * time.Millisecond}
+	server := httptest.NewUnstartedServer(h)
+	server.Config = h.Server()
+	server.Start()
+	t.Cleanup(func() { h.Close(); server.Close() })
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.WriteString(conn, "GET http://target.invalid/ HTTP/1.1\r\nHost: target.invalid\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.Close {
+		t.Fatal("response closed the connection before it went idle")
+	}
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := reader.ReadByte(); err == nil {
+		t.Fatal("unexpected data on idle connection")
+	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatal("idle keep-alive connection remained open")
+	}
+}

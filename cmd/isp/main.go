@@ -169,7 +169,7 @@ func run(args []string) (runErr error) {
 	}
 	server := &socks5.Server{Selector: router, OnUpstreamError: reportUpstreamError(manager)}
 	proxyHandler := &httpproxy.Handler{Selector: httpRouter, OnUpstreamError: reportUpstreamError(httpManager)}
-	proxyServer := &http.Server{Handler: proxyHandler, ReadHeaderTimeout: 5 * time.Second}
+	proxyServer := proxyHandler.Server()
 	app.UDPCapability = server
 	workers := 3
 	if socksListener != nil {
