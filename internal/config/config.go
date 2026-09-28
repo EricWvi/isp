@@ -42,9 +42,12 @@ type Config struct {
 }
 
 type Server struct {
-	HTTPListen   string `yaml:"http_listen" json:"http_listen"`
-	SOCKS5Listen string `yaml:"socks5_listen" json:"socks5_listen"`
-	Database     string `yaml:"database" json:"database"`
+	HTTPListen       string `yaml:"http_listen" json:"http_listen"`
+	SOCKS5Listen     string `yaml:"socks5_listen" json:"socks5_listen"`
+	SOCKS5Enabled    bool   `yaml:"socks5_enabled" json:"socks5_enabled"`
+	HTTPProxyListen  string `yaml:"http_proxy_listen" json:"http_proxy_listen"`
+	HTTPProxyEnabled bool   `yaml:"http_proxy_enabled" json:"http_proxy_enabled"`
+	Database         string `yaml:"database" json:"database"`
 }
 
 type HealthCheck struct {
@@ -57,10 +60,11 @@ type HealthCheck struct {
 }
 
 type Provider struct {
-	ID      string  `yaml:"id" json:"id"`
-	Type    string  `yaml:"type" json:"type"`
-	Enabled bool    `yaml:"enabled" json:"enabled"`
-	Proxies []Proxy `yaml:"proxies" json:"proxies"`
+	ID       string  `yaml:"id" json:"id"`
+	Type     string  `yaml:"type" json:"type"`
+	Protocol string  `yaml:"protocol,omitempty" json:"protocol"`
+	Enabled  bool    `yaml:"enabled" json:"enabled"`
+	Proxies  []Proxy `yaml:"proxies" json:"proxies"`
 }
 
 type Proxy struct {
@@ -76,7 +80,7 @@ type Proxy struct {
 
 func Defaults() Config {
 	return Config{
-		Server:      Server{HTTPListen: "127.0.0.1:8080", SOCKS5Listen: "127.0.0.1:30001", Database: "./data/isp.db"},
+		Server:      Server{HTTPListen: "127.0.0.1:8080", SOCKS5Listen: "127.0.0.1:30001", SOCKS5Enabled: true, HTTPProxyListen: "127.0.0.1:30002", Database: "./data/isp.db"},
 		HealthCheck: HealthCheck{URL: "https://www.gstatic.com/generate_204", IntervalMin: Duration(5 * time.Minute), IntervalMax: Duration(8 * time.Minute), Timeout: Duration(15 * time.Second), FailureThreshold: 3, BackoffMax: Duration(time.Hour)},
 	}
 }
@@ -119,6 +123,14 @@ func (c Config) Validate() error {
 	if err := validateListen(c.Server.SOCKS5Listen, true); err != nil {
 		return fmt.Errorf("server.socks5_listen: %w", err)
 	}
+	if err := validateListen(c.Server.HTTPProxyListen, true); err != nil {
+		return fmt.Errorf("server.http_proxy_listen: %w", err)
+	}
+	if c.Server.SOCKS5Enabled && c.Server.SOCKS5Listen == c.Server.HTTPListen ||
+		c.Server.HTTPProxyEnabled && c.Server.HTTPProxyListen == c.Server.HTTPListen ||
+		c.Server.SOCKS5Enabled && c.Server.HTTPProxyEnabled && c.Server.SOCKS5Listen == c.Server.HTTPProxyListen {
+		return errors.New("enabled listeners must use distinct addresses")
+	}
 	if strings.TrimSpace(c.Server.Database) == "" {
 		return errors.New("server.database must not be empty")
 	}
@@ -142,6 +154,9 @@ func (c Config) Validate() error {
 		providerIDs[p.ID] = true
 		if p.Type != "proxy-seller" {
 			return fmt.Errorf("%s.type %q is unsupported", where, p.Type)
+		}
+		if p.Protocol != "" && p.Protocol != "socks5" && p.Protocol != "http" {
+			return fmt.Errorf("%s.protocol must be socks5 or http", where)
 		}
 		for j, proxy := range p.Proxies {
 			loc := fmt.Sprintf("%s.proxies[%d]", where, j)
@@ -168,7 +183,20 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func validateListen(addr string, socks bool) error {
+// ForProtocol returns only the providers belonging to one upstream pool.
+// Legacy providers without a protocol remain in the SOCKS5 pool.
+func (c Config) ForProtocol(protocol string) Config {
+	providers := c.Providers
+	c.Providers = make([]Provider, 0, len(providers))
+	for _, group := range providers {
+		if group.Protocol == protocol || protocol == "socks5" && group.Protocol == "" {
+			c.Providers = append(c.Providers, group)
+		}
+	}
+	return c
+}
+
+func validateListen(addr string, proxy bool) error {
 	host, portText, err := net.SplitHostPort(addr)
 	if err != nil || (host != "localhost" && (net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback())) {
 		return errors.New("must be a local host:port address")
@@ -177,8 +205,8 @@ func validateListen(addr string, socks bool) error {
 	if _, err := fmt.Sscanf(portText, "%d", &port); err != nil || fmt.Sprintf("%d", port) != portText || port < 1 || port > 65535 {
 		return errors.New("port must be between 1 and 65535")
 	}
-	if socks && port < 30000 {
-		return errors.New("SOCKS5 port must be at least 30000")
+	if proxy && port < 30000 {
+		return errors.New("proxy port must be at least 30000")
 	}
 	return nil
 }

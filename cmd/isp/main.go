@@ -16,6 +16,7 @@ import (
 	"isp/internal/admin"
 	"isp/internal/config"
 	"isp/internal/health"
+	"isp/internal/httpproxy"
 	"isp/internal/routing"
 	"isp/internal/socks5"
 	"isp/internal/state"
@@ -38,11 +39,11 @@ func run(args []string) (runErr error) {
 		if len(args) != 2 {
 			return usage()
 		}
-	case "auto-switch":
+	case "auto-switch", "auto-switch-http":
 		if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
 			return usage()
 		}
-	case "select":
+	case "select", "select-http":
 		if len(args) != 4 {
 			return usage()
 		}
@@ -71,19 +72,31 @@ func run(args []string) (runErr error) {
 		fmt.Println("state database ready")
 		return nil
 	}
-	router, err := routing.Open(context.Background(), cfg, store)
+	router, err := routing.Open(context.Background(), cfg.ForProtocol("socks5"), store)
 	if err != nil {
 		return err
 	}
-	if command == "select" {
-		if err := router.Select(context.Background(), routing.Ref{ProviderID: args[2], ProxyID: args[3]}); err != nil {
+	httpRouter, err := routing.Open(context.Background(), cfg.ForProtocol("http"), store.HTTPSelectionStore())
+	if err != nil {
+		return err
+	}
+	if command == "select" || command == "select-http" {
+		selectedRouter := router
+		if command == "select-http" {
+			selectedRouter = httpRouter
+		}
+		if err := selectedRouter.Select(context.Background(), routing.Ref{ProviderID: args[2], ProxyID: args[3]}); err != nil {
 			return err
 		}
 		fmt.Println("current proxy selected")
 		return nil
 	}
-	if command == "auto-switch" {
-		if err := router.SetAutoSwitch(context.Background(), args[2] == "on"); err != nil {
+	if command == "auto-switch" || command == "auto-switch-http" {
+		selectedRouter := router
+		if command == "auto-switch-http" {
+			selectedRouter = httpRouter
+		}
+		if err := selectedRouter.SetAutoSwitch(context.Background(), args[2] == "on"); err != nil {
 			return err
 		}
 		fmt.Println("automatic switch", args[2])
@@ -91,7 +104,11 @@ func run(args []string) (runErr error) {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	manager, err := health.New(ctx, cfg, store, router, nil)
+	manager, err := health.New(ctx, cfg.ForProtocol("socks5"), store, router, nil)
+	if err != nil {
+		return err
+	}
+	httpManager, err := health.New(ctx, cfg.ForProtocol("http"), store, httpRouter, health.HTTPUpstreamProbe)
 	if err != nil {
 		return err
 	}
@@ -99,21 +116,31 @@ func run(args []string) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("frontend build missing: %w", err)
 	}
-	listener, err := net.Listen("tcp", cfg.Server.SOCKS5Listen)
-	if err != nil {
-		return err
+	var socksListener, proxyListener net.Listener
+	if cfg.Server.SOCKS5Enabled {
+		socksListener, err = net.Listen("tcp", cfg.Server.SOCKS5Listen)
+		if err != nil {
+			return fmt.Errorf("listen SOCKS5: %w", err)
+		}
+		defer socksListener.Close()
 	}
-	defer listener.Close()
+	if cfg.Server.HTTPProxyEnabled {
+		proxyListener, err = net.Listen("tcp", cfg.Server.HTTPProxyListen)
+		if err != nil {
+			return fmt.Errorf("listen HTTP proxy: %w", err)
+		}
+		defer proxyListener.Close()
+	}
 	httpListener, err := net.Listen("tcp", cfg.Server.HTTPListen)
 	if err != nil {
-		return err
+		return fmt.Errorf("listen management page: %w", err)
 	}
 	defer httpListener.Close()
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	fatal := make(chan error, 1)
-	app := &admin.App{Config: file, Router: router, Health: manager, Store: store, OnFatal: func(err error) {
+	app := &admin.App{Config: file, Router: router, HTTPRouter: httpRouter, Health: manager, HTTPHealth: httpManager, Store: store, OnFatal: func(err error) {
 		logger.Error("management update failed after YAML write", "error", err)
 		select {
 		case fatal <- err:
@@ -125,18 +152,47 @@ func run(args []string) (runErr error) {
 	mux.Handle("/api/", app.Handler())
 	mux.Handle("/", static)
 	httpServer := &http.Server{Handler: admin.LocalOnly(mux), ReadHeaderTimeout: 5 * time.Second}
-	logger.Info("SOCKS5 listening", "address", listener.Addr().String())
+	if socksListener != nil {
+		logger.Info("SOCKS5 listening", "address", socksListener.Addr().String())
+	}
+	if proxyListener != nil {
+		logger.Info("HTTP proxy listening", "address", proxyListener.Addr().String())
+	}
 	logger.Info("management page listening", "address", httpListener.Addr().String())
-	server := &socks5.Server{Selector: router, OnUpstreamError: func(ref routing.Ref, err error) {
-		logger.Warn("upstream connection failed", "provider_id", ref.ProviderID, "proxy_id", ref.ProxyID, "error", err)
-		if reportErr := manager.ReportConnectionError(ctx, ref); reportErr != nil {
-			logger.Error("schedule health recheck failed", "provider_id", ref.ProviderID, "proxy_id", ref.ProxyID, "error", reportErr)
+	reportUpstreamError := func(manager *health.Manager) func(routing.Ref, error) {
+		return func(ref routing.Ref, err error) {
+			logger.Warn("upstream connection failed", "provider_id", ref.ProviderID, "proxy_id", ref.ProxyID, "error", err)
+			if reportErr := manager.ReportConnectionError(ctx, ref); reportErr != nil {
+				logger.Error("schedule health recheck failed", "provider_id", ref.ProviderID, "proxy_id", ref.ProxyID, "error", reportErr)
+			}
 		}
-	}}
+	}
+	server := &socks5.Server{Selector: router, OnUpstreamError: reportUpstreamError(manager)}
+	proxyHandler := &httpproxy.Handler{Selector: httpRouter, OnUpstreamError: reportUpstreamError(httpManager)}
+	proxyServer := &http.Server{Handler: proxyHandler, ReadHeaderTimeout: 5 * time.Second}
 	app.UDPCapability = server
-	results := make(chan error, 3)
+	workers := 3
+	if socksListener != nil {
+		workers++
+	}
+	if proxyListener != nil {
+		workers++
+	}
+	results := make(chan error, workers)
 	go func() { results <- manager.Run(serveCtx) }()
-	go func() { results <- server.Serve(serveCtx, listener) }()
+	go func() { results <- httpManager.Run(serveCtx) }()
+	if socksListener != nil {
+		go func() { results <- server.Serve(serveCtx, socksListener) }()
+	}
+	if proxyListener != nil {
+		go func() {
+			err := proxyServer.Serve(proxyListener)
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			results <- err
+		}()
+	}
 	go func() {
 		err := httpServer.Serve(httpListener)
 		if errors.Is(err, http.ErrServerClosed) {
@@ -147,18 +203,30 @@ func run(args []string) (runErr error) {
 	shutdownDone := make(chan error, 1)
 	go func() {
 		<-serveCtx.Done()
+		proxyHandler.Close()
 		shutdownCtx, stopShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stopShutdown()
+		proxyErr := error(nil)
+		if proxyListener != nil {
+			proxyErr = proxyServer.Shutdown(shutdownCtx)
+			if proxyErr != nil {
+				_ = proxyServer.Close()
+			}
+		}
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			_ = httpServer.Close()
-			shutdownDone <- fmt.Errorf("shutdown management server: %w", err)
+			shutdownDone <- errors.Join(fmt.Errorf("shutdown management server: %w", err), proxyErr)
 			return
 		}
-		shutdownDone <- nil
+		shutdownDone <- proxyErr
 	}()
 	first := <-results
 	cancel()
-	runErr = errors.Join(first, <-results, <-results, <-shutdownDone)
+	runErr = first
+	for i := 1; i < workers; i++ {
+		runErr = errors.Join(runErr, <-results)
+	}
+	runErr = errors.Join(runErr, <-shutdownDone)
 	select {
 	case err := <-fatal:
 		runErr = errors.Join(runErr, fmt.Errorf("management state diverged from YAML: %w", err))
@@ -171,5 +239,5 @@ func run(args []string) (runErr error) {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: isp <config-check|state-init|serve> <config.yaml> | isp select <config.yaml> <provider-id> <proxy-id> | isp auto-switch <config.yaml> <on|off>")
+	return fmt.Errorf("usage: isp <config-check|state-init|serve> <config.yaml> | isp <select|select-http> <config.yaml> <provider-id> <proxy-id> | isp <auto-switch|auto-switch-http> <config.yaml> <on|off>")
 }

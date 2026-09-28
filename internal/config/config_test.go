@@ -27,7 +27,8 @@ func TestDecodeDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HealthCheck.FailureThreshold != 3 || cfg.Server.HTTPListen != "127.0.0.1:8080" {
+	if cfg.HealthCheck.FailureThreshold != 3 || cfg.Server.HTTPListen != "127.0.0.1:8080" ||
+		!cfg.Server.SOCKS5Enabled || cfg.Server.HTTPProxyEnabled || cfg.Server.HTTPProxyListen != "127.0.0.1:30002" {
 		t.Fatalf("defaults missing: %+v", cfg)
 	}
 	for _, tc := range []struct{ name, input string }{
@@ -49,6 +50,59 @@ func TestDecodeDefaultsAndValidation(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+func TestProxyListenerCombinations(t *testing.T) {
+	for _, tc := range []struct {
+		name, flags string
+		socks, http bool
+	}{
+		{"both-off", "  socks5_enabled: false\n  http_proxy_enabled: false\n", false, false},
+		{"socks-only", "  socks5_enabled: true\n  http_proxy_enabled: false\n", true, false},
+		{"http-only", "  socks5_enabled: false\n  http_proxy_enabled: true\n", false, true},
+		{"both-on", "  socks5_enabled: true\n  http_proxy_enabled: true\n", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := strings.Replace(sample, "  socks5_listen: 127.0.0.1:30001\n", "  socks5_listen: 127.0.0.1:30001\n"+tc.flags, 1)
+			cfg, err := Decode([]byte(input))
+			if err != nil || cfg.Server.SOCKS5Enabled != tc.socks || cfg.Server.HTTPProxyEnabled != tc.http {
+				t.Fatalf("listeners: %+v, %v", cfg.Server, err)
+			}
+		})
+	}
+	for _, input := range []string{
+		"  http_proxy_enabled: true\n  http_proxy_listen: 127.0.0.1:29999\n",
+		"  http_proxy_enabled: true\n  http_proxy_listen: 127.0.0.1:30001\n",
+	} {
+		if _, err := Decode([]byte(strings.Replace(sample, "  socks5_listen: 127.0.0.1:30001\n", "  socks5_listen: 127.0.0.1:30001\n"+input, 1))); err == nil {
+			t.Fatal("expected invalid HTTP proxy listener to be rejected")
+		}
+	}
+}
+
+func TestProviderProtocolPoolsAndLegacyDefault(t *testing.T) {
+	cfg, err := Decode([]byte(sample + `  - id: http-seller
+    type: proxy-seller
+    protocol: http
+    enabled: true
+    proxies:
+      - id: http-first
+        host: 192.0.2.11
+        port: 8080
+        enabled: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if groups := cfg.ForProtocol("socks5").Providers; len(groups) != 1 || groups[0].ID != "proxy-seller" {
+		t.Fatalf("legacy SOCKS5 pool: %+v", groups)
+	}
+	if groups := cfg.ForProtocol("http").Providers; len(groups) != 1 || groups[0].ID != "http-seller" {
+		t.Fatalf("HTTP pool: %+v", groups)
+	}
+	if _, err := Decode([]byte(strings.Replace(sample, "    type: proxy-seller", "    type: proxy-seller\n    protocol: ftp", 1))); err == nil {
+		t.Fatal("unsupported upstream protocol accepted")
 	}
 }
 

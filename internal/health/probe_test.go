@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
@@ -134,5 +135,34 @@ func TestHTTPProbeUsesSOCKSAndAcceptsNon2xx(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHTTPUpstreamProbeUsesHTTPProxyAndRejectsBadCredentials(t *testing.T) {
+	targets := make(chan string, 2)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targets <- r.URL.Host
+		want := "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:secret"))
+		if r.Header.Get("Proxy-Authorization") != want {
+			w.WriteHeader(http.StatusProxyAuthRequired)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer proxyServer.Close()
+	host, portText, _ := net.SplitHostPort(proxyServer.Listener.Addr().String())
+	port, _ := strconv.Atoi(portText)
+	proxy := config.Proxy{Host: host, Port: port, Username: "alice", Password: "secret"}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := HTTPUpstreamProbe(ctx, proxy, "http://health.invalid/check"); err != nil {
+		t.Fatal(err)
+	}
+	if host := <-targets; host != "health.invalid" {
+		t.Fatalf("HTTP upstream did not receive target host: %q", host)
+	}
+	proxy.Password = "wrong"
+	if err := HTTPUpstreamProbe(ctx, proxy, "http://health.invalid/check"); err == nil {
+		t.Fatal("HTTP upstream 407 was treated as healthy")
 	}
 }

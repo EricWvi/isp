@@ -1,6 +1,6 @@
 # IP 池服务
 
-按 [roadmap](docs/roadmap.md) 分阶段实现的单机 IP 池服务。包含配置与状态存储、Provider 选路、本地 SOCKS5 TCP `CONNECT`、健康检查与自动故障切换，以及本地管理页面。
+按 [roadmap](docs/roadmap.md) 分阶段实现的单机 IP 池服务。包含配置与状态存储、Provider 选路、本地 SOCKS5 和 HTTP 代理入口、健康检查与自动故障切换，以及本地管理页面。
 
 需要 Go 1.24+ 和 Node.js 20.19+。复制 `config.example.yaml` 为自己的配置文件后，可先验证配置并初始化状态数据库：
 
@@ -9,7 +9,7 @@ go run ./cmd/isp config-check config.example.yaml
 go run ./cmd/isp state-init config.example.yaml
 ```
 
-`state-init` 会在当前工作目录下按 `server.database` 创建 SQLite 文件。配置中的 `provider.id` 和代理 `id` 必须是稳定的英文小写字母、数字、连字符；编辑代理连接信息时保留原 ID。代理 ID 在所有 Provider 中全局唯一。HTTP 与 SOCKS5 监听地址限本机，SOCKS5 端口至少为 30000。
+`state-init` 会在当前工作目录下按 `server.database` 创建 SQLite 文件。配置中的 `provider.id` 和代理 `id` 必须是稳定的英文小写字母、数字、连字符；编辑代理连接信息时保留原 ID。代理 ID 在所有 Provider 中全局唯一。管理页面和代理入口都只允许监听本机；SOCKS5 和 HTTP 代理端口至少为 30000。
 
 前端工程位于 `frontend/`：
 
@@ -21,27 +21,40 @@ npm run build
 
 前端产物会嵌入 Go 可执行文件；修改前端后，应先运行 `npm run build`，再构建或运行 Go 服务。仓库包含预构建的 `frontend/dist`，因此仅运行 Go 测试不需要安装 Node.js。
 
-阶段 2 的选路模块位于 `internal/routing`。新连接可读取一次 `Snapshot()`，已确认不可用时会得到“无代理”；手动选择允许选择已启用但尚未确认健康的代理。自动候选只包含健康状态为 `healthy` 的代理，自动切换开关开启时不会立刻轮换。选路行为可用 `go test ./internal/routing ./internal/provider` 无网络验证。
+阶段 2 的选路模块位于 `internal/routing`。新连接可读取一次 `Snapshot()`，已确认不可用时会得到“无代理”；手动选择允许选择已启用但尚未确认健康的代理。自动候选只包含健康状态为 `healthy` 的代理，自动切换开关开启时不会立刻轮换。SOCKS5 和 HTTP 各有一套独立的当前选择与自动切换状态。选路行为可用 `go test ./internal/routing ./internal/provider` 无网络验证。
 
 在 `providers[].proxies` 中加入真实上游 SOCKS5 代理后，可启动本地入口。服务会立即检测代理，并在首次找到健康代理时选择一个作为当前代理；也可在启动前手动指定：
 
 ```sh
 go run ./cmd/isp select config.example.yaml proxy-seller your-proxy-id
 go run ./cmd/isp auto-switch config.example.yaml on
+# HTTP 池使用独立命令：
+go run ./cmd/isp select-http config.example.yaml http-seller your-http-proxy-id
+go run ./cmd/isp auto-switch-http config.example.yaml on
 go run ./cmd/isp serve config.example.yaml
 ```
 
 服务启动后打开 `http://127.0.0.1:8080/`（或配置的 `server.http_listen`）。页面支持添加、编辑、启停和删除代理，手动选择或轮换代理，并控制自动故障切换；代理变更会写回 YAML。页面和 API 只监听本机地址，且没有登录认证，请勿经公网或反向代理开放。直接编辑 YAML 后仍需重启服务；服务运行时也不要用独立的 `select`、`auto-switch` 命令修改同一数据库，避免运行内存与数据库状态不一致。
 
+`server.socks5_enabled` 和 `server.http_proxy_enabled` 分别控制两个代理入口，可以都关、都开或只开一个。默认只开 SOCKS5（`127.0.0.1:30001`）；HTTP 代理默认关闭，启用后监听 `127.0.0.1:30002`。`server.http_listen` 始终是独立的管理页面地址，关闭两个代理入口也不影响页面和健康检查。修改监听开关或地址后需重启；开启的监听地址不能重复。
+
+两套上游池在 `providers` 中用 `protocol: socks5 | http` 区分；省略 `protocol` 的旧配置仍属于 SOCKS5 池。HTTP 代理填在 `protocol: http` 的 Provider 下，使用该上游自己的主机、端口和可选用户名密码。两个池的健康检测、当前选择、手动轮换和自动故障切换互不影响，选择状态分别保存在 SQLite；已有数据库会自动增量升级，保留原 SOCKS5 选择。管理页面可分别操作两个池。
+
 管理 API 位于 `/api/`，`GET /api/state` 返回代理与健康状态，但不返回密码；`udp_capability` 是配置值，`udp_status` 是包含本次运行观测结果的当前值。写请求需以 `/api/state` 中对应的 `config_revision` 或 `selection_revision` 作为带双引号的 `If-Match` 标头；版本过期时返回 `409`，页面会提示刷新。自动切换默认关闭。
 
 入口接受本地 SOCKS5 无认证客户端的 TCP `CONNECT` 和 `UDP ASSOCIATE`，上游可无认证或使用用户名密码。客户端请求中的目标域名会交给上游解析；没有当前代理或当前代理确认不可用时会返回 SOCKS5 失败，不会直连目标。
+
+HTTP 代理入口支持普通 `http://` 请求和 HTTPS 的 `CONNECT` 隧道，上游是 HTTP 池当前选中的 HTTP 代理，并由该上游解析目标域名。每个 HTTP 请求或隧道在建立时固定代理，切换只影响新请求；没有可用代理或上游连接失败时返回 `502`，不会直连目标。HTTP 代理同样没有客户端认证，因此只能在可信本机使用。启用后可验证：
+
+```sh
+curl --fail --show-error --proxy http://127.0.0.1:30002 https://example.com/
+```
 
 UDP 关联由一条控制 TCP 连接维持，关闭该连接或服务退出即关闭本地和上游 UDP relay；空闲超时默认 5 分钟，由网关的 `IdleTimeout` 控制。每个关联在建立时固定当前代理，切换只影响新关联。客户端必须把 SOCKS5 UDP 封装报文发到 `UDP ASSOCIATE` 响应中的本地地址和端口；分片报文（`FRAG != 0`）会被丢弃。仅接受与控制连接同 IP 的客户端 UDP 报文，并固定第一个有效报文的源端口。上游响应中的 `0.0.0.0`／`::` relay 地址按其控制连接的对端 IP 处理。
 
 代理配置可设置 `udp_capability: unknown | supported | unsupported`，省略时为 `unknown`。标记 `unsupported` 的代理收到 UDP 请求时直接返回 SOCKS5 状态 7，不尝试上游；未知代理会尝试上游 `UDP ASSOCIATE`，若上游返回状态 7，则运行期间记住“不支持”，管理页面会显示该观测结果。修改代理连接配置后会重新判断；观测结果不跨重启持久化。这个标识不影响 TCP 健康检查或 TCP 转发。UDP 请求失败不会回退到本机直连。当前自动化测试覆盖 DNS 格式报文、1200 字节的 QUIC 最小尺寸载荷和一般 UDP 报文的透明转发；未覆盖完整 QUIC 握手或公网环境。
 
-健康检查经各自的 SOCKS5 上游访问 `health_check.url`。任何 HTTP 状态码都表示代理链路可用；默认连续失败 3 次才标记不可用。正常检查间隔、超时、失败阈值和退避上限均由 YAML 控制，状态与下次检查时间保存在 SQLite。SOCKS 上游连接错误会提前安排复检，不会直接增加失败计数。自动切换开启后，只有当前代理确认不可用才会切换。
+健康检查经各自协议的上游访问 `health_check.url`。任何 HTTP 状态码都表示代理链路可用；默认连续失败 3 次才标记不可用。正常检查间隔、超时、失败阈值和退避上限均由 YAML 控制，状态与下次检查时间保存在 SQLite。上游连接错误会提前安排复检，不会直接增加失败计数。自动切换开启后，只有该池的当前代理确认不可用才会切换。
 
 ## 发布与运行
 

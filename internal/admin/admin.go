@@ -23,7 +23,9 @@ var errBadRequest = errors.New("invalid proxy request")
 type App struct {
 	Config        *config.File
 	Router        *routing.Router
+	HTTPRouter    *routing.Router
 	Health        *health.Manager
+	HTTPHealth    *health.Manager
 	Store         *state.Store
 	UDPCapability interface {
 		UDPCapability(routing.Ref, config.Proxy) string
@@ -59,17 +61,20 @@ type proxyView struct {
 }
 
 type providerView struct {
-	ID      string      `json:"id"`
-	Type    string      `json:"type"`
-	Enabled bool        `json:"enabled"`
-	Proxies []proxyView `json:"proxies"`
+	ID       string      `json:"id"`
+	Type     string      `json:"type"`
+	Protocol string      `json:"protocol"`
+	Enabled  bool        `json:"enabled"`
+	Proxies  []proxyView `json:"proxies"`
 }
 
 type stateView struct {
-	ConfigRevision    string         `json:"config_revision"`
-	SelectionRevision string         `json:"selection_revision"`
-	Selection         selectionView  `json:"selection"`
-	Providers         []providerView `json:"providers"`
+	ConfigRevision        string         `json:"config_revision"`
+	SelectionRevision     string         `json:"selection_revision"`
+	Selection             selectionView  `json:"selection"`
+	HTTPSelectionRevision string         `json:"http_selection_revision"`
+	HTTPSelection         selectionView  `json:"http_selection"`
+	Providers             []providerView `json:"providers"`
 }
 
 type proxyInput struct {
@@ -94,8 +99,11 @@ func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", a.getState)
 	mux.HandleFunc("PUT /api/auto-switch", a.setAutoSwitch)
+	mux.HandleFunc("PUT /api/http/auto-switch", a.setAutoSwitch)
 	mux.HandleFunc("POST /api/rotate", a.rotate)
+	mux.HandleFunc("POST /api/http/rotate", a.rotate)
 	mux.HandleFunc("PUT /api/selection", a.selectProxy)
+	mux.HandleFunc("PUT /api/http/selection", a.selectProxy)
 	mux.HandleFunc("POST /api/providers/{provider}/proxies", a.createProxy)
 	mux.HandleFunc("PUT /api/providers/{provider}/proxies/{proxy}", a.updateProxy)
 	mux.HandleFunc("PATCH /api/providers/{provider}/proxies/{proxy}/enabled", a.setProxyEnabled)
@@ -126,11 +134,20 @@ func (a *App) writeState(w http.ResponseWriter, r *http.Request) {
 		Selection: selectionView{ProviderID: selection.ProviderID, ProxyID: selection.ProxyID, AutoSwitch: selection.AutoSwitch, SelectedAt: timeString(selection.SelectedAt), SwitchReason: selection.SwitchReason},
 		Providers: make([]providerView, 0, len(cfg.Providers)),
 	}
+	if a.HTTPRouter != nil {
+		selected, revision := a.HTTPRouter.SelectionWithRevision()
+		response.HTTPSelectionRevision = revision
+		response.HTTPSelection = selectionView{ProviderID: selected.ProviderID, ProxyID: selected.ProxyID, AutoSwitch: selected.AutoSwitch, SelectedAt: timeString(selected.SelectedAt), SwitchReason: selected.SwitchReason}
+	}
 	for _, group := range cfg.Providers {
-		provider := providerView{ID: group.ID, Type: group.Type, Enabled: group.Enabled, Proxies: make([]proxyView, 0, len(group.Proxies))}
+		protocol := group.Protocol
+		if protocol == "" {
+			protocol = "socks5"
+		}
+		provider := providerView{ID: group.ID, Type: group.Type, Protocol: protocol, Enabled: group.Enabled, Proxies: make([]proxyView, 0, len(group.Proxies))}
 		for _, proxy := range group.Proxies {
 			capability := udpCapability(proxy)
-			if a.UDPCapability != nil {
+			if protocol == "socks5" && a.UDPCapability != nil {
 				capability = a.UDPCapability.UDPCapability(routing.Ref{ProviderID: group.ID, ProxyID: proxy.ID}, proxy)
 			}
 			health, found := known[routing.Ref{ProviderID: group.ID, ProxyID: proxy.ID}]
@@ -151,6 +168,13 @@ func (a *App) writeState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (a *App) selectionRouter(r *http.Request) *routing.Router {
+	if strings.HasPrefix(r.URL.Path, "/api/http/") {
+		return a.HTTPRouter
+	}
+	return a.Router
+}
+
 func (a *App) setAutoSwitch(w http.ResponseWriter, r *http.Request) {
 	expected, ok := requireRevision(w, r)
 	if !ok {
@@ -166,7 +190,12 @@ func (a *App) setAutoSwitch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "enabled is required")
 		return
 	}
-	if err := a.Router.SetAutoSwitchIfRevision(r.Context(), expected, *input.Enabled); err != nil {
+	router := a.selectionRouter(r)
+	if router == nil {
+		writeError(w, http.StatusServiceUnavailable, "HTTP pool unavailable")
+		return
+	}
+	if err := router.SetAutoSwitchIfRevision(r.Context(), expected, *input.Enabled); err != nil {
 		writeActionError(w, err)
 		return
 	}
@@ -178,7 +207,12 @@ func (a *App) rotate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.Router.RotateIfRevision(r.Context(), expected); err != nil {
+	router := a.selectionRouter(r)
+	if router == nil {
+		writeError(w, http.StatusServiceUnavailable, "HTTP pool unavailable")
+		return
+	}
+	if err := router.RotateIfRevision(r.Context(), expected); err != nil {
 		writeActionError(w, err)
 		return
 	}
@@ -197,7 +231,12 @@ func (a *App) selectProxy(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	if err := a.Router.SelectIfRevision(r.Context(), expected, routing.Ref{ProviderID: input.ProviderID, ProxyID: input.ProxyID}); err != nil {
+	router := a.selectionRouter(r)
+	if router == nil {
+		writeError(w, http.StatusServiceUnavailable, "HTTP pool unavailable")
+		return
+	}
+	if err := router.SelectIfRevision(r.Context(), expected, routing.Ref{ProviderID: input.ProviderID, ProxyID: input.ProxyID}); err != nil {
 		writeActionError(w, err)
 		return
 	}
@@ -305,10 +344,17 @@ func (a *App) mutateConfig(w http.ResponseWriter, r *http.Request, change func(*
 		return
 	}
 	cfg := a.Config.Snapshot()
-	routingErr := a.Router.Reconfigure(r.Context(), cfg)
-	healthErr := a.Health.Reconfigure(r.Context(), cfg)
-	if routingErr != nil || healthErr != nil {
-		cause := errors.Join(routingErr, healthErr)
+	routingErr := a.Router.Reconfigure(r.Context(), cfg.ForProtocol("socks5"))
+	healthErr := a.Health.Reconfigure(r.Context(), cfg.ForProtocol("socks5"))
+	var httpRoutingErr, httpHealthErr error
+	if a.HTTPRouter != nil {
+		httpRoutingErr = a.HTTPRouter.Reconfigure(r.Context(), cfg.ForProtocol("http"))
+	}
+	if a.HTTPHealth != nil {
+		httpHealthErr = a.HTTPHealth.Reconfigure(r.Context(), cfg.ForProtocol("http"))
+	}
+	if routingErr != nil || healthErr != nil || httpRoutingErr != nil || httpHealthErr != nil {
+		cause := errors.Join(routingErr, healthErr, httpRoutingErr, httpHealthErr)
 		if a.OnFatal != nil {
 			a.OnFatal(cause)
 		}

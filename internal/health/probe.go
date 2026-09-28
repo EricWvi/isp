@@ -2,8 +2,11 @@ package health
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"isp/internal/config"
@@ -26,6 +29,26 @@ func HTTPProbe(ctx context.Context, proxy config.Proxy, rawURL string) error {
 			return socks5.DialContext(ctx, proxy, address)
 		},
 	}
+	return runProbe(ctx, transport, rawURL, false)
+}
+
+// HTTPUpstreamProbe checks a target through an HTTP forward proxy. HTTPS
+// targets are tunneled with CONNECT by net/http.
+func HTTPUpstreamProbe(ctx context.Context, proxy config.Proxy, rawURL string) error {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+	}
+	proxyURL := &url.URL{Scheme: "http", Host: net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port))}
+	if proxy.Username != "" {
+		proxyURL.User = url.UserPassword(proxy.Username, proxy.Password)
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true}
+	return runProbe(ctx, transport, rawURL, true)
+}
+
+func runProbe(ctx context.Context, transport *http.Transport, rawURL string, rejectProxyAuth bool) error {
 	defer transport.CloseIdleConnections()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -39,5 +62,8 @@ func HTTPProbe(ctx context.Context, proxy config.Proxy, rawURL string) error {
 		return err
 	}
 	_ = response.Body.Close()
+	if rejectProxyAuth && response.StatusCode == http.StatusProxyAuthRequired {
+		return errors.New("HTTP upstream rejected proxy authentication")
+	}
 	return nil
 }

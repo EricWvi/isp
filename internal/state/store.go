@@ -12,7 +12,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Selection is the persisted global choice. An empty ProviderID and ProxyID mean no current proxy.
+// Selection is one pool's persisted choice. Empty IDs mean no current proxy.
 type Selection struct {
 	ProviderID   string
 	ProxyID      string
@@ -76,7 +76,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
+	if version > 2 {
 		return fmt.Errorf("database schema version %d is newer than this binary", version)
 	}
 	if version == 0 {
@@ -105,14 +105,34 @@ func (s *Store) migrate(ctx context.Context) error {
 			}
 		}
 	}
+	if version < 2 {
+		for _, statement := range []string{
+			`CREATE TABLE selection_http (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				provider_id TEXT NOT NULL DEFAULT '', proxy_id TEXT NOT NULL DEFAULT '',
+				auto_switch INTEGER NOT NULL DEFAULT 0 CHECK (auto_switch IN (0, 1)),
+				selected_at TEXT NOT NULL DEFAULT '', switch_reason TEXT NOT NULL DEFAULT ''
+			)`,
+			`INSERT INTO selection_http (id) VALUES (1)`,
+			`PRAGMA user_version = 2`,
+		} {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("migrate HTTP selection: %w", err)
+			}
+		}
+	}
 	return tx.Commit()
 }
 
 func (s *Store) LoadSelection(ctx context.Context) (Selection, error) {
+	return s.loadSelection(ctx, "selection")
+}
+
+func (s *Store) loadSelection(ctx context.Context, table string) (Selection, error) {
 	var v Selection
 	var enabled int
 	var selectedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT provider_id, proxy_id, auto_switch, selected_at, switch_reason FROM selection WHERE id = 1`).Scan(&v.ProviderID, &v.ProxyID, &enabled, &selectedAt, &v.SwitchReason)
+	err := s.db.QueryRowContext(ctx, `SELECT provider_id, proxy_id, auto_switch, selected_at, switch_reason FROM `+table+` WHERE id = 1`).Scan(&v.ProviderID, &v.ProxyID, &enabled, &selectedAt, &v.SwitchReason)
 	if err != nil {
 		return Selection{}, err
 	}
@@ -122,11 +142,28 @@ func (s *Store) LoadSelection(ctx context.Context) (Selection, error) {
 }
 
 func (s *Store) SaveSelection(ctx context.Context, v Selection) error {
+	return s.saveSelection(ctx, "selection", v)
+}
+
+func (s *Store) saveSelection(ctx context.Context, table string, v Selection) error {
 	if (v.ProviderID == "") != (v.ProxyID == "") {
 		return errors.New("provider and proxy IDs must both be set or empty")
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE selection SET provider_id = ?, proxy_id = ?, auto_switch = ?, selected_at = ?, switch_reason = ? WHERE id = 1`, v.ProviderID, v.ProxyID, v.AutoSwitch, formatTime(v.SelectedAt), v.SwitchReason)
+	_, err := s.db.ExecContext(ctx, `UPDATE `+table+` SET provider_id = ?, proxy_id = ?, auto_switch = ?, selected_at = ?, switch_reason = ? WHERE id = 1`, v.ProviderID, v.ProxyID, v.AutoSwitch, formatTime(v.SelectedAt), v.SwitchReason)
 	return err
+}
+
+// HTTPSelectionStore scopes routing selection while sharing the health table.
+func (s *Store) HTTPSelectionStore() *HTTPSelectionStore { return &HTTPSelectionStore{Store: s} }
+
+type HTTPSelectionStore struct{ *Store }
+
+func (s *HTTPSelectionStore) LoadSelection(ctx context.Context) (Selection, error) {
+	return s.loadSelection(ctx, "selection_http")
+}
+
+func (s *HTTPSelectionStore) SaveSelection(ctx context.Context, v Selection) error {
+	return s.saveSelection(ctx, "selection_http", v)
 }
 
 func (s *Store) LoadHealth(ctx context.Context) ([]Health, error) {

@@ -151,6 +151,55 @@ func TestSelectionActionsAndPreconditions(t *testing.T) {
 	}
 }
 
+func TestHTTPPoolSelectionIsIndependent(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := context.Background()
+	if err := app.Config.Update(func(cfg *config.Config) error {
+		cfg.Providers = append(cfg.Providers, config.Provider{ID: "http-seller", Type: "proxy-seller", Protocol: "http", Enabled: true, Proxies: []config.Proxy{
+			{ID: "http-one", Host: "192.0.2.10", Port: 8080, Enabled: true},
+			{ID: "http-two", Host: "192.0.2.11", Port: 8080, Enabled: true},
+		}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"http-one", "http-two"} {
+		if err := app.Store.SaveHealth(ctx, state.Health{ProviderID: "http-seller", ProxyID: id, Status: "healthy"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := app.Config.Snapshot()
+	httpRouter, err := routing.Open(ctx, cfg.ForProtocol("http"), app.Store.HTTPSelectionStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpManager, err := health.New(ctx, cfg.ForProtocol("http"), app.Store, httpRouter, func(context.Context, config.Proxy, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.HTTPRouter, app.HTTPHealth = httpRouter, httpManager
+	initial := readState(t, send(t, app.Handler(), "GET", "/api/state", "", ""))
+	if initial.Selection.ProxyID != "one" || initial.HTTPSelection.ProxyID != "http-one" || initial.Providers[1].Protocol != "http" {
+		t.Fatalf("unexpected pool state: %+v", initial)
+	}
+	selected := readState(t, send(t, app.Handler(), "PUT", "/api/http/selection", `{"provider_id":"http-seller","proxy_id":"http-two"}`, initial.HTTPSelectionRevision))
+	if selected.HTTPSelection.ProxyID != "http-two" || selected.Selection.ProxyID != "one" || selected.SelectionRevision != initial.SelectionRevision {
+		t.Fatalf("HTTP selection changed SOCKS pool: %+v", selected)
+	}
+	enabled := readState(t, send(t, app.Handler(), "PUT", "/api/http/auto-switch", `{"enabled":true}`, selected.HTTPSelectionRevision))
+	if !enabled.HTTPSelection.AutoSwitch || enabled.Selection.AutoSwitch {
+		t.Fatalf("HTTP auto-switch changed SOCKS pool: %+v", enabled)
+	}
+	wrongPool := send(t, app.Handler(), "PUT", "/api/selection", `{"provider_id":"http-seller","proxy_id":"http-one"}`, enabled.SelectionRevision)
+	if wrongPool.Code != http.StatusNotFound {
+		t.Fatalf("cross-pool selection status %d", wrongPool.Code)
+	}
+	created := readState(t, send(t, app.Handler(), "POST", "/api/providers/http-seller/proxies", `{"id":"http-three","host":"192.0.2.12","port":8080,"enabled":true}`, enabled.ConfigRevision))
+	if len(created.Providers[1].Proxies) != 3 || created.Selection.ProxyID != "one" || created.HTTPSelection.ProxyID != "http-two" {
+		t.Fatalf("HTTP config update changed selections: %+v", created)
+	}
+}
+
 func TestConcurrentConfigWritesRejectStaleRevision(t *testing.T) {
 	app, _ := newTestApp(t)
 	handler := app.Handler()

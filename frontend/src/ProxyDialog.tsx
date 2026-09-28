@@ -11,6 +11,7 @@ import { Switch } from '@/components/ui/switch'
 
 type Props = {
   providerId: string
+  protocol: 'socks5' | 'http'
   proxy: Proxy | null
   open: boolean
   busy: boolean
@@ -18,11 +19,11 @@ type Props = {
   onSave: (value: Record<string, unknown>) => Promise<boolean>
 }
 
-export function ProxyDialog({ providerId, proxy, open, busy, onOpenChange, onSave }: Props) {
+export function ProxyDialog({ providerId, protocol, proxy, open, busy, onOpenChange, onSave }: Props) {
   const [id, setId] = useState(proxy?.id ?? '')
   const [name, setName] = useState(proxy?.name ?? '')
   const [host, setHost] = useState(proxy?.host ?? '')
-  const [port, setPort] = useState(String(proxy?.port ?? 1080))
+  const [port, setPort] = useState(String(proxy?.port ?? (protocol === 'http' ? 8080 : 1080)))
   const [username, setUsername] = useState(proxy?.username ?? '')
   const [password, setPassword] = useState('')
   const [clearPassword, setClearPassword] = useState(false)
@@ -46,7 +47,7 @@ export function ProxyDialog({ providerId, proxy, open, busy, onOpenChange, onSav
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{proxy ? '编辑代理' : '新增代理'}</DialogTitle>
-          <DialogDescription>Provider：{providerId}。代理 ID 创建后保持不变。</DialogDescription>
+          <DialogDescription>Provider：{providerId}（{protocol.toUpperCase()}）。代理 ID 创建后保持不变。</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="grid gap-4">
           <div className="grid gap-2">
@@ -66,14 +67,14 @@ export function ProxyDialog({ providerId, proxy, open, busy, onOpenChange, onSav
             <div className="grid gap-2"><Label htmlFor="proxy-password">密码</Label><Input id="proxy-password" type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="new-password" placeholder={proxy?.has_password ? '留空则保持原密码' : '可选'} disabled={clearPassword} /></div>
           </div>
           {proxy?.has_password && <label className="flex items-center gap-2 text-sm text-muted-foreground"><input type="checkbox" checked={clearPassword} onChange={event => setClearPassword(event.target.checked)} />清除已保存的密码</label>}
-          <div className="grid gap-2">
+          {protocol === 'socks5' && <div className="grid gap-2">
             <Label htmlFor="proxy-udp">UDP 能力</Label>
             <select id="proxy-udp" value={udpCapability} onChange={event => setUdpCapability(event.target.value as Proxy['udp_capability'])} className="h-9 rounded-md border border-input bg-background px-3 text-sm">
               <option value="unknown">未知（尝试上游）</option>
               <option value="supported">已确认支持</option>
               <option value="unsupported">不支持（直接拒绝）</option>
             </select>
-          </div>
+          </div>}
           <div className="flex items-center justify-between rounded-lg border p-3"><Label htmlFor="proxy-enabled">启用代理</Label><Switch id="proxy-enabled" checked={enabled} onCheckedChange={setEnabled} /></div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>

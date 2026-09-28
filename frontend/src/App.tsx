@@ -12,7 +12,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 
-type Editor = { providerId: string; proxy: Proxy | null; revision: string }
+type Editor = { providerId: string; protocol: Provider['protocol']; proxy: Proxy | null; revision: string }
 type Danger = { kind: 'delete' | 'disable'; providerId: string; proxy: Proxy; revision: string }
 
 const statusLabels: Record<Proxy['status'], string> = {
@@ -77,8 +77,12 @@ export default function App() {
 
   const currentProvider = dashboard?.providers.find(group => group.id === dashboard.selection.provider_id)
   const current = currentProvider?.proxies.find(proxy => proxy.id === dashboard?.selection.proxy_id)
-  const healthyCount = dashboard?.providers.reduce((count, group) => count + group.proxies.filter(proxy => group.enabled && proxy.enabled && proxy.status === 'healthy').length, 0) ?? 0
-  const proxyCount = dashboard?.providers.reduce((count, group) => count + group.proxies.length, 0) ?? 0
+  const currentHTTPProvider = dashboard?.providers.find(group => group.id === dashboard.http_selection.provider_id)
+  const currentHTTP = currentHTTPProvider?.proxies.find(proxy => proxy.id === dashboard?.http_selection.proxy_id)
+  const healthyCount = dashboard?.providers.reduce((count, group) => count + (group.protocol === 'socks5' ? group.proxies.filter(proxy => group.enabled && proxy.enabled && proxy.status === 'healthy').length : 0), 0) ?? 0
+  const proxyCount = dashboard?.providers.reduce((count, group) => count + (group.protocol === 'socks5' ? group.proxies.length : 0), 0) ?? 0
+  const httpHealthyCount = dashboard?.providers.reduce((count, group) => count + (group.protocol === 'http' ? group.proxies.filter(proxy => group.enabled && proxy.enabled && proxy.status === 'healthy').length : 0), 0) ?? 0
+  const httpProxyCount = dashboard?.providers.reduce((count, group) => count + (group.protocol === 'http' ? group.proxies.length : 0), 0) ?? 0
 
   async function saveProxy(value: Record<string, unknown>): Promise<boolean> {
     if (!editor) return false
@@ -98,11 +102,14 @@ export default function App() {
   }
 
   function proxyActions(group: Provider, proxy: Proxy) {
-    const selected = dashboard?.selection.provider_id === group.id && dashboard.selection.proxy_id === proxy.id
+    const selection = group.protocol === 'http' ? dashboard?.http_selection : dashboard?.selection
+    const revision = group.protocol === 'http' ? dashboard?.http_selection_revision : dashboard?.selection_revision
+    const route = group.protocol === 'http' ? '/api/http/selection' : '/api/selection'
+    const selected = selection?.provider_id === group.id && selection.proxy_id === proxy.id
     return (
       <div className="flex items-center justify-end gap-1">
-        <Button variant="ghost" size="sm" disabled={busy || !proxy.enabled || selected || !group.enabled} onClick={() => void mutate('PUT', '/api/selection', dashboard!.selection_revision, { provider_id: group.id, proxy_id: proxy.id })}>选择</Button>
-        <Button variant="ghost" size="icon-sm" aria-label={`编辑 ${proxy.name || proxy.id}`} disabled={busy} onClick={() => setEditor({ providerId: group.id, proxy, revision: dashboard!.config_revision })}><Pencil /></Button>
+        <Button variant="ghost" size="sm" disabled={busy || !proxy.enabled || selected || !group.enabled} onClick={() => void mutate('PUT', route, revision!, { provider_id: group.id, proxy_id: proxy.id })}>选择</Button>
+        <Button variant="ghost" size="icon-sm" aria-label={`编辑 ${proxy.name || proxy.id}`} disabled={busy} onClick={() => setEditor({ providerId: group.id, protocol: group.protocol, proxy, revision: dashboard!.config_revision })}><Pencil /></Button>
         <Button variant="ghost" size="sm" disabled={busy} onClick={() => {
           if (proxy.enabled && selected) setDanger({ kind: 'disable', providerId: group.id, proxy, revision: dashboard!.config_revision })
           else void mutate('PATCH', `/api/providers/${encodeURIComponent(group.id)}/proxies/${encodeURIComponent(proxy.id)}/enabled`, dashboard!.config_revision, { enabled: !proxy.enabled })
@@ -118,7 +125,7 @@ export default function App() {
         <div>
           <p className="text-sm font-medium text-muted-foreground">本地代理管理</p>
           <h1 className="mt-1 font-heading text-3xl font-semibold tracking-tight">IP 池服务</h1>
-          <p className="mt-2 text-sm text-muted-foreground">一个全局当前代理，切换只影响新连接。</p>
+          <p className="mt-2 text-sm text-muted-foreground">SOCKS5 与 HTTP 各有独立代理池，切换只影响各自的新连接。</p>
         </div>
         <Button variant="outline" disabled={busy} onClick={() => void refresh(true)}><RefreshCw />刷新状态</Button>
       </header>
@@ -129,7 +136,7 @@ export default function App() {
         <section className="grid gap-4 md:grid-cols-[minmax(0,1.6fr)_minmax(16rem,1fr)]">
           <Card>
             <CardHeader>
-              <CardTitle>当前代理</CardTitle>
+              <CardTitle>当前 SOCKS5 代理</CardTitle>
               <CardDescription>所有新建 TCP 连接使用同一代理</CardDescription>
               {current && <CardAction><StatusBadge status={current.status} /></CardAction>}
             </CardHeader>
@@ -157,24 +164,44 @@ export default function App() {
           </Card>
         </section>
 
+        <section className="grid gap-4 md:grid-cols-[minmax(0,1.6fr)_minmax(16rem,1fr)]">
+          <Card>
+            <CardHeader><CardTitle>当前 HTTP 代理</CardTitle><CardDescription>HTTP 入口经 HTTP 上游转发</CardDescription>{currentHTTP && <CardAction><StatusBadge status={currentHTTP.status} /></CardAction>}</CardHeader>
+            <CardContent>{currentHTTP ? <>
+              <div><p className="font-heading text-xl font-semibold">{currentHTTP.name || currentHTTP.id}</p><p className="mt-1 font-mono text-sm text-muted-foreground">{currentHTTP.host}:{currentHTTP.port}</p></div>
+              <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2"><div><span className="text-muted-foreground">Provider</span><p className="mt-1">{currentHTTPProvider?.id}</p></div><div><span className="text-muted-foreground">选中时间</span><p className="mt-1">{timeLabel(dashboard.http_selection.selected_at)}</p></div><div><span className="text-muted-foreground">切换原因</span><p className="mt-1">{reasonLabels[dashboard.http_selection.switch_reason] || dashboard.http_selection.switch_reason || '—'}</p></div><div><span className="text-muted-foreground">健康状态</span><p className="mt-1">{statusLabels[currentHTTP.status]}</p></div></div>
+              {currentHTTP.last_error && <p className="mt-4 rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">最近错误：{currentHTTP.last_error}</p>}
+            </> : <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">HTTP 池尚无当前代理。请配置 HTTP Provider 并等待健康检测，或手动选择。</div>}</CardContent>
+          </Card>
+          <Card>
+            <CardHeader><CardTitle>HTTP 切换控制</CardTitle><CardDescription>{httpHealthyCount} 个健康候选 · 共 {httpProxyCount} 个代理</CardDescription></CardHeader>
+            <CardContent className="space-y-5"><div className="flex items-center justify-between gap-4 rounded-lg border p-3"><div><p className="font-medium">自动故障切换</p><p className="mt-1 text-xs text-muted-foreground">确认当前 HTTP 代理不可用后切换</p></div><Switch aria-label="HTTP 自动故障切换" checked={dashboard.http_selection.auto_switch} disabled={busy} onCheckedChange={checked => void mutate('PUT', '/api/http/auto-switch', dashboard.http_selection_revision, { enabled: checked })} /></div>
+              <Button className="w-full" variant="outline" disabled={busy} onClick={() => void mutate('POST', '/api/http/rotate', dashboard.http_selection_revision)}><ArrowRightLeft />手动轮换到下一个可用 HTTP 代理</Button>
+              {currentHTTP?.status === 'unavailable' && <p className="text-sm text-destructive">当前 HTTP 代理不可用，新请求会失败。</p>}
+              {httpHealthyCount === 0 && <p className="text-sm text-muted-foreground">当前没有检测确认可用的 HTTP 候选代理。</p>}
+            </CardContent>
+          </Card>
+        </section>
+
         <section className="space-y-4">
           <div><h2 className="font-heading text-xl font-semibold">Provider 与代理</h2><p className="mt-1 text-sm text-muted-foreground">检测状态每 10 秒更新。编辑连接信息后将重新检测。</p></div>
           {dashboard.providers.length === 0 && <Card><CardContent className="py-8 text-center text-muted-foreground">还没有配置 Provider。请先在 YAML 中添加 Provider。</CardContent></Card>}
           {dashboard.providers.map(group => <Card key={group.id}>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">{group.id}<Badge variant={group.enabled ? 'secondary' : 'outline'}>{group.enabled ? '已启用' : '已停用'}</Badge></CardTitle>
-              <CardDescription>{group.type} · {group.proxies.length} 个代理</CardDescription>
-              <CardAction><Button size="sm" variant="outline" disabled={busy} onClick={() => setEditor({ providerId: group.id, proxy: null, revision: dashboard.config_revision })}><Plus />新增代理</Button></CardAction>
+              <CardDescription>{group.type} · {group.protocol.toUpperCase()} 上游 · {group.proxies.length} 个代理</CardDescription>
+              <CardAction><Button size="sm" variant="outline" disabled={busy} onClick={() => setEditor({ providerId: group.id, protocol: group.protocol, proxy: null, revision: dashboard.config_revision })}><Plus />新增代理</Button></CardAction>
             </CardHeader>
             <CardContent>
               {group.proxies.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">尚无代理</p> : <div className="overflow-x-auto"><Table>
-                <TableHeader><TableRow><TableHead>代理</TableHead><TableHead>状态</TableHead><TableHead>UDP</TableHead><TableHead>最近检测</TableHead><TableHead>连续失败</TableHead><TableHead>下次检测</TableHead><TableHead>启停</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+                <TableHeader><TableRow><TableHead>代理</TableHead><TableHead>状态</TableHead>{group.protocol === 'socks5' && <TableHead>UDP</TableHead>}<TableHead>最近检测</TableHead><TableHead>连续失败</TableHead><TableHead>下次检测</TableHead><TableHead>启停</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
                 <TableBody>{group.proxies.map(proxy => {
-                  const selected = dashboard.selection.provider_id === group.id && dashboard.selection.proxy_id === proxy.id
+                  const selection = group.protocol === 'http' ? dashboard.http_selection : dashboard.selection
+                  const selected = selection.provider_id === group.id && selection.proxy_id === proxy.id
                   return <TableRow key={proxy.id} data-state={selected ? 'selected' : undefined}>
                     <TableCell><div className="flex items-center gap-2"><span className="font-medium">{proxy.name || proxy.id}</span>{selected && <Badge variant="outline">当前</Badge>}</div><p className="mt-1 font-mono text-xs text-muted-foreground">{proxy.host}:{proxy.port}</p><p className="mt-1 text-xs text-muted-foreground">{proxy.id}</p></TableCell>
                     <TableCell><StatusBadge status={proxy.status} />{proxy.last_error && <p title={proxy.last_error} className="mt-1 max-w-40 truncate text-xs text-destructive">{proxy.last_error}</p>}</TableCell>
-                    <TableCell>{proxy.udp_status === 'supported' ? '支持' : proxy.udp_status === 'unsupported' ? '不支持' : '未知'}</TableCell>
+                    {group.protocol === 'socks5' && <TableCell>{proxy.udp_status === 'supported' ? '支持' : proxy.udp_status === 'unsupported' ? '不支持' : '未知'}</TableCell>}
                     <TableCell>{timeLabel(proxy.last_checked_at)}</TableCell><TableCell>{proxy.consecutive_failures}</TableCell><TableCell>{timeLabel(proxy.next_check_at)}</TableCell><TableCell>{proxy.enabled ? '启用' : '停用'}</TableCell>
                     <TableCell>{proxyActions(group, proxy)}</TableCell>
                   </TableRow>
@@ -185,7 +212,7 @@ export default function App() {
         </section>
       </>}
 
-      {editor && <ProxyDialog key={`${editor.providerId}/${editor.proxy?.id || 'new'}`} providerId={editor.providerId} proxy={editor.proxy} open={true} busy={busy} onOpenChange={open => { if (!open) setEditor(null) }} onSave={saveProxy} />}
+      {editor && <ProxyDialog key={`${editor.providerId}/${editor.proxy?.id || 'new'}`} providerId={editor.providerId} protocol={editor.protocol} proxy={editor.proxy} open={true} busy={busy} onOpenChange={open => { if (!open) setEditor(null) }} onSave={saveProxy} />}
       <AlertDialog open={!!danger} onOpenChange={open => { if (!open) setDanger(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>

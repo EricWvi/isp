@@ -2,13 +2,15 @@
 
 ## 1. 目标
 
-构建一个单机运行的 IP 池服务，对本机应用暴露一个 SOCKS5 入口，并通过可扩展的 Provider 管理上游 SOCKS5 代理。
+构建一个单机运行的 IP 池服务，对本机应用暴露可独立启停的 SOCKS5 和 HTTP 入口，并通过可扩展的 Provider 分别管理同协议上游代理。
 
-服务在任意时刻维护一个全局当前代理。所有新建 TCP 连接默认复用该代理，只有用户明确操作或自动切换策略确认当前代理不可用时才切换，以尽量减少出口 IP 变化。已有连接不因切换而中断。
+服务为 SOCKS5 和 HTTP 两个池分别维护当前代理。各入口的新连接默认复用本池当前代理，只有用户明确操作或本池自动切换策略确认当前代理不可用时才切换，以尽量减少出口 IP 变化。已有连接不因切换而中断。
 
 首版只接入 `proxy-seller`。它暂不调用供应商接口，上游代理由 YAML 配置或管理页面维护。
 
 ## 2. 首版范围
+
+本节保留原始首版范围；后续增加的 UDP 和 HTTP 入口见第 7 节。
 
 ### 2.1 包含
 
@@ -191,6 +193,9 @@ SQLite 是以下运行时数据的事实来源：
 server:
   http_listen: 127.0.0.1:8080
   socks5_listen: 127.0.0.1:30001
+  socks5_enabled: true
+  http_proxy_listen: 127.0.0.1:30002
+  http_proxy_enabled: false
   database: ./data/isp.db
 
 health_check:
@@ -204,6 +209,7 @@ health_check:
 providers:
   - id: proxy-seller
     type: proxy-seller
+    protocol: socks5
     enabled: true
     proxies:
       - id: proxy-seller-01
@@ -290,6 +296,15 @@ providers:
 - [x] 对不支持 UDP 的上游代理给出能力标识和明确失败，不允许静默直连。
 
 进入条件：TCP `CONNECT`、健康检查、状态恢复和前端管理已经稳定。
+
+### 阶段 7 扩展：本地 HTTP 代理入口
+
+- [x] 增加 `127.0.0.1:30002` 的 HTTP 代理入口，支持普通 HTTP 请求与 HTTPS `CONNECT`。
+- [x] SOCKS5 和 HTTP 入口分别由 YAML 开关控制，支持都关、都开或只开一个；管理页面监听保持独立。
+- [x] HTTP 代理经 HTTP 池当前选中的 HTTP 上游连接目标，请求或隧道固定建立时的代理，无可用上游时明确失败且不直连。
+- [x] 测试两种上游认证模式、切换前后隧道、进程监听组合与优雅退出。
+
+HTTP 入口使用独立的 `protocol: http` Provider 池，连接 HTTP 上游而非 SOCKS5 上游。两池分别保存当前选择与自动切换状态；旧 Provider 省略 `protocol` 时仍按 SOCKS5 处理。
 
 ### 阶段 8：供应商接口集成
 

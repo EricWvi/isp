@@ -19,6 +19,7 @@ export type Proxy = {
 export type Provider = {
   id: string
   type: string
+  protocol: 'socks5' | 'http'
   enabled: boolean
   proxies: Proxy[]
 }
@@ -27,6 +28,14 @@ export type Dashboard = {
   config_revision: string
   selection_revision: string
   selection: {
+    provider_id: string
+    proxy_id: string
+    auto_switch: boolean
+    selected_at: string
+    switch_reason: string
+  }
+  http_selection_revision: string
+  http_selection: {
     provider_id: string
     proxy_id: string
     auto_switch: boolean
