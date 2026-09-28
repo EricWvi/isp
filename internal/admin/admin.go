@@ -31,6 +31,8 @@ type App struct {
 		UDPCapability(routing.Ref, config.Proxy) string
 	}
 	OnFatal func(error)
+	// Version is the build version shown on the management page.
+	Version string
 	mu      sync.Mutex
 }
 
@@ -69,6 +71,7 @@ type providerView struct {
 }
 
 type stateView struct {
+	Version               string         `json:"version"`
 	ConfigRevision        string         `json:"config_revision"`
 	SelectionRevision     string         `json:"selection_revision"`
 	Selection             selectionView  `json:"selection"`
@@ -130,6 +133,7 @@ func (a *App) writeState(w http.ResponseWriter, r *http.Request) {
 		known[routing.Ref{ProviderID: record.ProviderID, ProxyID: record.ProxyID}] = record
 	}
 	response := stateView{
+		Version:        a.Version,
 		ConfigRevision: configRevision, SelectionRevision: selectionRevision,
 		Selection: selectionView{ProviderID: selection.ProviderID, ProxyID: selection.ProxyID, AutoSwitch: selection.AutoSwitch, SelectedAt: timeString(selection.SelectedAt), SwitchReason: selection.SwitchReason},
 		Providers: make([]providerView, 0, len(cfg.Providers)),

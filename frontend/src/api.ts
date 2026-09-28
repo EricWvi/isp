@@ -25,6 +25,7 @@ export type Provider = {
 }
 
 export type Dashboard = {
+  version: string
   config_revision: string
   selection_revision: string
   selection: {

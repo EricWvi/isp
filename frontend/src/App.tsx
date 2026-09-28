@@ -124,7 +124,10 @@ export default function App() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-sm font-medium text-muted-foreground">本地代理管理</p>
-          <h1 className="mt-1 font-heading text-3xl font-semibold tracking-tight">IP 池服务</h1>
+          <h1 className="mt-1 flex items-baseline gap-2 font-heading text-3xl font-semibold tracking-tight">
+            IP 池服务
+            {dashboard && <span className="font-mono text-sm font-normal text-muted-foreground">{dashboard.version}</span>}
+          </h1>
           <p className="mt-2 text-sm text-muted-foreground">SOCKS5 与 HTTP 各有独立代理池，切换只影响各自的新连接。</p>
         </div>
         <Button variant="outline" disabled={busy} onClick={() => void refresh(true)}><RefreshCw />刷新状态</Button>

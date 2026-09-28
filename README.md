@@ -39,7 +39,7 @@ go run ./cmd/isp serve config.example.yaml
 
 两套上游池在 `providers` 中用 `protocol: socks5 | http` 区分；省略 `protocol` 的旧配置仍属于 SOCKS5 池。HTTP 代理填在 `protocol: http` 的 Provider 下，使用该上游自己的主机、端口和可选用户名密码。两个池的健康检测、当前选择、手动轮换和自动故障切换互不影响，选择状态分别保存在 SQLite；已有数据库会自动增量升级，保留原 SOCKS5 选择。管理页面可分别操作两个池。
 
-管理 API 位于 `/api/`，`GET /api/state` 返回代理与健康状态，但不返回密码；`udp_capability` 是配置值，`udp_status` 是包含本次运行观测结果的当前值。写请求需以 `/api/state` 中对应的 `config_revision` 或 `selection_revision` 作为带双引号的 `If-Match` 标头；版本过期时返回 `409`，页面会提示刷新。自动切换默认关闭。
+管理 API 位于 `/api/`，`GET /api/state` 返回构建版本（`version`，页面标题旁显示）、代理与健康状态，但不返回密码；`udp_capability` 是配置值，`udp_status` 是包含本次运行观测结果的当前值。写请求需以 `/api/state` 中对应的 `config_revision` 或 `selection_revision` 作为带双引号的 `If-Match` 标头；版本过期时返回 `409`，页面会提示刷新。自动切换默认关闭。
 
 入口接受本地 SOCKS5 无认证客户端的 TCP `CONNECT` 和 `UDP ASSOCIATE`，上游可无认证或使用用户名密码。客户端请求中的目标域名会交给上游解析；没有当前代理或当前代理确认不可用时会返回 SOCKS5 失败，不会直连目标。
 

@@ -243,3 +243,12 @@ func TestWriteFailureKeepsRuntimeConfig(t *testing.T) {
 		t.Fatal("failed write changed runtime configuration")
 	}
 }
+
+func TestStateReportsBuildVersion(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.Version = "v9.8.7"
+	state := readState(t, send(t, app.Handler(), http.MethodGet, "/api/state", "", ""))
+	if state.Version != "v9.8.7" {
+		t.Fatalf("version %q", state.Version)
+	}
+}
