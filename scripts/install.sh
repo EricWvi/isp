@@ -2,15 +2,16 @@
 set -Eeuo pipefail
 
 repo=EricWvi/isp
+service=isp-proxy.service
 user_name=$(id -un)
 binary_dir="$HOME/.local/bin"
 config_dir="$HOME/.config/isp-proxy"
-unit_dir="$HOME/.config/systemd/user"
 data_dir="$HOME/.local/share/isp-proxy"
+unit_dir=${ISP_PROXY_SYSTEMD_DIR:-/etc/systemd/system}
 binary="$binary_dir/isp-proxy"
 config="$config_dir/config.yaml"
-unit="$unit_dir/isp-proxy.service"
-service=isp-proxy.service
+unit="$unit_dir/$service"
+legacy_unit="$HOME/.config/systemd/user/$service"
 
 if [[ $(uname -s) != Linux ]]; then
   echo '此脚本仅支持 Linux。' >&2
@@ -25,56 +26,16 @@ if [[ $(id -u) -eq 0 ]]; then
   echo '请用要运行服务的普通用户执行，不要使用 sudo bash。' >&2
   exit 1
 fi
-for command_name in curl systemctl loginctl install mktemp; do
+if [[ ! $user_name =~ ^[a-zA-Z0-9_.-]+$ || ! $HOME =~ ^/[a-zA-Z0-9_./-]+$ ]]; then
+  echo '用户名或 HOME 路径包含服务模板不支持的字符。' >&2
+  exit 1
+fi
+for command_name in curl sudo systemctl install mktemp; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "缺少命令: $command_name" >&2
     exit 1
   fi
 done
-
-connect_user_manager() {
-  if systemctl --user show-environment >/dev/null 2>&1; then
-    return 0
-  fi
-  # Some SSH sessions omit these variables even when the user manager exists.
-  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-  systemctl --user show-environment >/dev/null 2>&1
-}
-linger_enabled() {
-  [[ $(loginctl show-user "$user_name" -p Linger --value 2>/dev/null || true) == yes ]]
-}
-enable_linger() {
-  if linger_enabled || loginctl enable-linger "$user_name" >/dev/null 2>&1; then
-    return 0
-  fi
-  if command -v sudo >/dev/null 2>&1; then
-    # sudo reads its password from the terminal even when bash reads the script
-    # from a curl pipe. Let it prompt instead of silently failing with -n.
-    sudo loginctl enable-linger "$user_name"
-  else
-    return 1
-  fi
-}
-
-if ! connect_user_manager; then
-  if ! enable_linger; then
-    echo "无法启动 systemd 用户管理器；请执行 sudo loginctl enable-linger $user_name 后重试。" >&2
-    exit 1
-  fi
-  connected=false
-  for ((attempt = 0; attempt < 10; attempt++)); do
-    if connect_user_manager; then
-      connected=true
-      break
-    fi
-    sleep 1
-  done
-  if [[ $connected == false ]]; then
-    echo '已尝试启用 linger，但仍无法连接 systemd 用户管理器；请检查主机的 user@ 服务和用户总线。' >&2
-    exit 1
-  fi
-fi
 
 version=${ISP_PROXY_VERSION:-}
 if [[ -z $version ]]; then
@@ -92,24 +53,37 @@ deployment_started=false
 was_active=false
 had_binary=false
 had_unit=false
+had_legacy=false
+legacy_active=false
+legacy_enabled=false
 rollback() {
   echo '安装失败，正在恢复原有服务文件。' >&2
-  if [[ $had_unit == false ]]; then
-    systemctl --user disable "$service" || true
-  fi
+  sudo systemctl stop "$service" || true
   if [[ $had_binary == true ]]; then
     install -m 0755 "$temp_dir/old-binary" "$binary" || true
   elif [[ -e $binary ]]; then
     rm -- "$binary" || true
   fi
   if [[ $had_unit == true ]]; then
-    install -m 0644 "$temp_dir/old-unit" "$unit" || true
-  elif [[ -e $unit ]]; then
-    rm -- "$unit" || true
+    sudo install -m 0644 "$temp_dir/old-unit" "$unit" || true
+  else
+    sudo systemctl disable "$service" || true
+    sudo rm -f -- "$unit" || true
   fi
-  systemctl --user daemon-reload || true
+  sudo systemctl daemon-reload || true
   if [[ $was_active == true ]]; then
-    systemctl --user start "$service" || true
+    sudo systemctl start "$service" || true
+  fi
+  if [[ $had_legacy == true ]]; then
+    if [[ ! -f $legacy_unit ]]; then
+      install -m 0644 "$temp_dir/old-legacy-unit" "$legacy_unit" || true
+    fi
+    if [[ $legacy_enabled == true ]]; then
+      systemctl --user enable "$service" || true
+    fi
+    if [[ $legacy_active == true ]]; then
+      systemctl --user start "$service" || true
+    fi
   fi
 }
 cleanup() {
@@ -125,9 +99,13 @@ trap cleanup EXIT
 
 curl -fL --retry 3 "https://github.com/$repo/releases/download/$version/isp-proxy-linux-$arch" \
   -o "$temp_dir/isp-proxy"
-curl -fL --retry 3 "https://raw.githubusercontent.com/$repo/$version/packaging/isp-proxy.service.in" \
-  -o "$temp_dir/isp-proxy.service"
+curl -fL --retry 3 "https://raw.githubusercontent.com/$repo/main/packaging/isp-proxy.service.in" \
+  -o "$temp_dir/isp-proxy.service.in"
 chmod 0755 "$temp_dir/isp-proxy"
+unit_text=$(<"$temp_dir/isp-proxy.service.in")
+unit_text=${unit_text//@USER@/$user_name}
+unit_text=${unit_text//@HOME@/$HOME}
+printf '%s\n' "$unit_text" >"$temp_dir/$service"
 
 cat >"$temp_dir/config.yaml" <<'YAML'
 server:
@@ -138,27 +116,55 @@ server:
 providers: []
 YAML
 
-mkdir -p "$binary_dir" "$config_dir" "$unit_dir" "$data_dir/data"
+mkdir -p "$binary_dir" "$config_dir" "$data_dir/data"
 if [[ -f $config ]]; then
   config_to_check=$config
 else
   config_to_check="$temp_dir/config.yaml"
 fi
 "$temp_dir/isp-proxy" config-check "$config_to_check"
+sudo -v
 
 if [[ -f $binary ]]; then
   cp -p "$binary" "$temp_dir/old-binary"
   had_binary=true
 fi
-if [[ -f $unit ]]; then
-  cp -p "$unit" "$temp_dir/old-unit"
+if sudo test -f "$unit"; then
+  sudo cat "$unit" >"$temp_dir/old-unit"
+  if ! grep -Fxq "User=$user_name" "$temp_dir/old-unit"; then
+    echo "$unit 已由其他用户或方式管理，停止安装以免覆盖。" >&2
+    exit 1
+  fi
   had_unit=true
 fi
-if systemctl --user is-active --quiet "$service"; then
+if [[ -f $legacy_unit ]]; then
+  if ! systemctl --user show-environment >/dev/null 2>&1; then
+    echo "检测到旧用户服务 $legacy_unit，但无法连接用户管理器；请先手动停用旧服务。" >&2
+    exit 1
+  fi
+  had_legacy=true
+  cp -p "$legacy_unit" "$temp_dir/old-legacy-unit"
+  if systemctl --user is-active --quiet "$service"; then
+    legacy_active=true
+  fi
+  if systemctl --user is-enabled --quiet "$service"; then
+    legacy_enabled=true
+  fi
+fi
+if sudo systemctl is-active --quiet "$service"; then
   was_active=true
-  systemctl --user stop "$service"
+fi
+if [[ $had_unit == false && $was_active == true ]]; then
+  echo "检测到其他来源的运行中系统服务 $service，停止安装以免覆盖。" >&2
+  exit 1
 fi
 deployment_started=true
+if [[ $had_legacy == true ]]; then
+  systemctl --user disable --now "$service"
+fi
+if [[ $was_active == true ]]; then
+  sudo systemctl stop "$service"
+fi
 
 if [[ ! -f $config ]]; then
   install -m 0600 "$temp_dir/config.yaml" "$config"
@@ -167,22 +173,19 @@ else
   echo "保留已有配置: $config"
 fi
 install -m 0755 "$temp_dir/isp-proxy" "$binary"
-install -m 0644 "$temp_dir/isp-proxy.service" "$unit"
-systemctl --user daemon-reload
+sudo install -m 0644 "$temp_dir/$service" "$unit"
+sudo systemctl daemon-reload
 if [[ $had_unit == false ]]; then
-  systemctl --user enable --now "$service"
+  sudo systemctl enable --now "$service"
 elif [[ $was_active == true ]]; then
-  systemctl --user start "$service"
+  sudo systemctl start "$service"
+fi
+if [[ $had_legacy == true ]]; then
+  rm -- "$legacy_unit"
+  systemctl --user daemon-reload
 fi
 deployment_started=false
 
-if ! linger_enabled; then
-  enable_linger || true
-  if ! linger_enabled; then
-    echo "要在未登录时开机启动，请执行: sudo loginctl enable-linger $user_name" >&2
-  fi
-fi
-
-echo "已安装 $version。服务状态: $(systemctl --user is-active "$service" || true)"
+echo "已安装 $version。服务状态: $(sudo systemctl is-active "$service" || true)"
 echo "配置文件: $config"
-echo "查看日志: journalctl --user -u $service -f"
+echo "查看日志: sudo journalctl -u $service -f"

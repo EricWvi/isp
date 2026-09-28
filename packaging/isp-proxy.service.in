@@ -3,10 +3,12 @@ Description=ISP Proxy
 
 [Service]
 Type=exec
-WorkingDirectory=%h/.local/share/isp-proxy
-ExecStart=%h/.local/bin/isp-proxy serve %h/.config/isp-proxy/config.yaml
+User=@USER@
+WorkingDirectory=@HOME@/.local/share/isp-proxy
+ExecStart=@HOME@/.local/bin/isp-proxy serve @HOME@/.config/isp-proxy/config.yaml
 Restart=on-failure
 RestartSec=5s
+UMask=0077
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

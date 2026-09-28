@@ -70,7 +70,7 @@ bash scripts/release.sh
 
 推送匹配 `v*` 的 tag 后，GitHub Actions 会重建前端、运行 Go 测试，并在同名 GitHub Release 中发布两个 Linux 可执行文件：`isp-proxy-linux-amd64` 和 `isp-proxy-linux-arm64`。它们已嵌入管理页面，无需在目标机器安装 Go 或 Node.js。
 
-### systemd 用户服务（Linux）
+### systemd 系统服务（Linux）
 
 以运行服务的普通用户登录服务器，执行以下命令安装或更新最新 GitHub Release：
 
@@ -78,9 +78,9 @@ bash scripts/release.sh
 curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | bash
 ```
 
-脚本自动选择 `amd64` 或 `arm64`，首次安装时创建程序、配置、数据和 systemd 用户服务目录，写入空代理池的默认配置并启动管理页面。默认关闭 SOCKS5 和 HTTP 两个代理入口。再次执行会保留配置与数据库，先停止正在运行的服务，替换程序后重新启动；原本未运行的服务仍保持停止。脚本会尝试开启 linger，让用户未登录时也能开机启动；必要时会请求 sudo 密码，若当前账号无法授权则提示补执行的命令。首次安装后请编辑 `~/.config/isp-proxy/config.yaml`，填写上游代理并按需将 `server.socks5_enabled`、`server.http_proxy_enabled` 改为 `true`，再运行 `systemctl --user restart isp-proxy.service`。日志可通过 `journalctl --user -u isp-proxy.service -f` 查看。
+脚本自动选择 `amd64` 或 `arm64`，首次安装时创建程序、配置和数据目录，写入空代理池的默认配置，并通过 `sudo systemctl` 安装、启用和启动系统服务。服务进程仍以执行安装脚本的普通用户身份运行，不需要 linger 或 systemd 用户管理器。默认只监听本机管理页面，SOCKS5 和 HTTP 两个代理入口均关闭。再次执行会保留配置与数据库，先停止正在运行的服务，替换程序后重新启动；原本未运行的服务仍保持停止。首次安装后请编辑 `~/.config/isp-proxy/config.yaml`，填写上游代理并按需将 `server.socks5_enabled`、`server.http_proxy_enabled` 改为 `true`，再运行 `sudo systemctl restart isp-proxy.service`。日志可通过 `sudo journalctl -u isp-proxy.service -f` 查看。
 
-服务模板为 [packaging/isp-proxy.service.in](packaging/isp-proxy.service.in)，安装到 `~/.config/systemd/user/isp-proxy.service`；每次更新会覆盖该服务文件。工作目录固定为 `~/.local/share/isp-proxy`，示例中的 `server.database: ./data/isp.db` 会写入该目录下的 `data/isp.db`。如需安装指定版本，可使用 `curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | ISP_PROXY_VERSION=v1.0.0 bash`，把版本号换成已发布的 tag。
+服务模板为 [packaging/isp-proxy.service.in](packaging/isp-proxy.service.in)，安装到 `/etc/systemd/system/isp-proxy.service`；每次更新会覆盖该服务文件。若检测到以前安装的用户服务，脚本会先停用，再迁移到系统服务。工作目录固定为 `~/.local/share/isp-proxy`，默认配置中的 `server.database: ./data/isp.db` 会写入该目录下的 `data/isp.db`。如需安装指定版本，可使用 `curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | ISP_PROXY_VERSION=v0.1.0 bash`，把版本号换成已发布的 tag。
 
 配置文件可能包含上游密码，建议权限为 `0600`，且不要提交真实凭据。`server.database` 的相对路径相对于启动时的工作目录；使用服务管理器时请固定工作目录，或在 YAML 中使用绝对路径。监听地址只允许本机地址，不要把无认证的管理页面转发到公网。启动前可用 `config-check` 校验 YAML；若 SQLite 文件损坏，服务会报错而不会自动清空它。
 
