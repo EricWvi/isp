@@ -1,0 +1,16 @@
+server:
+  http_listen: 127.0.0.1:8080
+  socks5_listen: 127.0.0.1:30001
+  database: ./data/isp.db
+health_check:
+  url: https://www.gstatic.com/generate_204
+  interval_min: 5m
+  interval_max: 8m
+  timeout: 15s
+  failure_threshold: 3
+  backoff_max: 1h
+providers:
+  - id: proxy-seller
+    type: proxy-seller
+    enabled: true
+    proxies: []

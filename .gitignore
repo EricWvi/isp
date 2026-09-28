@@ -26,8 +26,8 @@ dist-ssr
 /target
 packages/contracts/.test-dist/
 /.data
+/data/
 .tmp
 *.tsbuildinfo
 
 /memories
-
