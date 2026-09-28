@@ -163,6 +163,23 @@ func TestAutomaticFailoverAndStaleConcurrentEvents(t *testing.T) {
 	}
 }
 
+func TestHealthyAlternativeArrivingAfterFailureTriggersFailover(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	cfg := testConfig(group("first", proxy("a")), group("second", proxy("b")))
+	seedHealth(t, s, Ref{"first", "a"})
+	r := openRouter(t, cfg, s)
+	if err := r.SetAutoSwitch(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.HealthChanged(ctx, Ref{"first", "a"}, "unavailable"); !errors.Is(err, ErrNoAvailable) {
+		t.Fatalf("expected no candidate yet: %v", err)
+	}
+	if err := r.HealthChanged(ctx, Ref{"second", "b"}, "healthy"); err != nil || selected(r) != (Ref{"second", "b"}) {
+		t.Fatalf("late healthy candidate did not trigger failover: %v, %v", selected(r), err)
+	}
+}
+
 func TestRecoveryKeepsEnabledChoiceAndAutoSwitch(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)

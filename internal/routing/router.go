@@ -180,6 +180,11 @@ func (r *Router) HealthChanged(ctx context.Context, ref Ref, status string) erro
 			return r.saveChoice(ctx, next, "health-available")
 		}
 	}
+	if ref != current && status == "healthy" && current != (Ref{}) && r.status(current) == "unavailable" && r.selection.AutoSwitch {
+		if next, ok := r.next(current, true); ok {
+			return r.saveChoice(ctx, next, "automatic-failover")
+		}
+	}
 	if ref != current || status != "unavailable" || !r.selection.AutoSwitch {
 		return nil
 	}

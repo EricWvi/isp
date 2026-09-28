@@ -28,13 +28,16 @@ func TestSelectCommandPersistsChoice(t *testing.T) {
 	if err := run([]string{"select", path, "seller", "one"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := run([]string{"auto-switch", path, "on"}); err != nil {
+		t.Fatal(err)
+	}
 	store, err := state.Open(context.Background(), cfg.Server.Database)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	selection, err := store.LoadSelection(context.Background())
-	if err != nil || selection.ProviderID != "seller" || selection.ProxyID != "one" {
+	if err != nil || selection.ProviderID != "seller" || selection.ProxyID != "one" || !selection.AutoSwitch {
 		t.Fatalf("selection: %+v, %v", selection, err)
 	}
 }
