@@ -6,11 +6,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -486,4 +488,43 @@ func TestOneWayTrafficKeepsConnectionOpen(t *testing.T) {
 	if err != nil || len(received) != 12 {
 		t.Fatalf("received %d of 12 bytes, %v", len(received), err)
 	}
+}
+
+type flakyListener struct {
+	net.Listener
+	failures atomic.Int32
+}
+
+func (l *flakyListener) Accept() (net.Conn, error) {
+	if l.failures.Add(-1) >= 0 {
+		return nil, &net.OpError{Op: "accept", Net: "tcp", Err: os.NewSyscallError("accept", syscall.EMFILE)}
+	}
+	return l.Listener.Accept()
+}
+
+func TestTemporaryAcceptErrorsDoNotStopServer(t *testing.T) {
+	target := startTarget(t, false)
+	var accepts atomic.Int32
+	upstream := startMockProxy(t, target, "", "", &accepts)
+	selector := &testSelector{}
+	selector.set(upstream, "", "")
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := &flakyListener{Listener: inner}
+	listener.failures.Store(3)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- (&Server{Selector: selector}).Serve(ctx, listener) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	client, status := connectClient(t, inner.Addr().String(), 1)
+	defer client.Close()
+	if status != 0 {
+		t.Fatalf("CONNECT status %d", status)
+	}
+	roundTrip(t, client, "after-emfile")
 }

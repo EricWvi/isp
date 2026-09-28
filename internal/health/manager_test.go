@@ -234,3 +234,60 @@ func TestUnavailableCurrentStaysSelectedWithAutomaticSwitchOff(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type failingSaveStore struct{}
+
+func (failingSaveStore) LoadHealth(context.Context) ([]state.Health, error) { return nil, nil }
+
+func (failingSaveStore) SaveHealth(context.Context, state.Health) error {
+	return errors.New("disk full")
+}
+
+type statusRecorder struct{ statuses chan string }
+
+func (r statusRecorder) HealthChanged(_ context.Context, _ routing.Ref, status string) error {
+	r.statuses <- status
+	return errors.New("selection write failed")
+}
+
+func TestPersistenceFailuresAreReportedWithoutStoppingChecks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	recorder := statusRecorder{statuses: make(chan string, 4)}
+	manager, err := New(ctx, healthConfig(healthProxy("one")), failingSaveStore{}, recorder, func(context.Context, config.Proxy, string) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := make(chan error, 4)
+	manager.OnError = func(err error) { reported <- err }
+	done := make(chan error, 1)
+	go func() { done <- manager.Run(ctx) }()
+	select {
+	case status := <-recorder.statuses:
+		if status != "healthy" {
+			t.Fatalf("routing notified with %q", status)
+		}
+	case err := <-done:
+		t.Fatalf("health manager stopped after a store failure: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("routing was not notified after an unsaved probe result")
+	}
+	for range 2 {
+		select {
+		case <-reported:
+		case <-time.After(2 * time.Second):
+			t.Fatal("store and routing failures were not reported")
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("health manager stopped after persistence failures: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

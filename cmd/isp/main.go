@@ -139,6 +139,8 @@ func run(args []string) (runErr error) {
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	manager.OnError = func(err error) { logger.Error("SOCKS5 health state update failed", "error", err) }
+	httpManager.OnError = func(err error) { logger.Error("HTTP health state update failed", "error", err) }
 	fatal := make(chan error, 1)
 	app := &admin.App{Config: file, Router: router, HTTPRouter: httpRouter, Health: manager, HTTPHealth: httpManager, Store: store, OnFatal: func(err error) {
 		logger.Error("management update failed after YAML write", "error", err)

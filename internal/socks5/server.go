@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"isp/internal/config"
@@ -94,14 +95,27 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		handlers.Wait()
 		stop()
 	}()
+	var retryDelay time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return err
+			if !temporaryAcceptError(err) {
+				return err
+			}
+			// Back off like net/http so running out of descriptors pauses new
+			// connections instead of stopping the service.
+			retryDelay = min(max(2*retryDelay, 5*time.Millisecond), time.Second)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(retryDelay):
+			}
+			continue
 		}
+		retryDelay = 0
 		mu.Lock()
 		active[conn] = struct{}{}
 		handlers.Add(1)
@@ -344,6 +358,10 @@ func writeAll(conn net.Conn, data []byte) error {
 		data = data[n:]
 	}
 	return nil
+}
+
+func temporaryAcceptError(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM)
 }
 
 func durationOr(value, fallback time.Duration) time.Duration {

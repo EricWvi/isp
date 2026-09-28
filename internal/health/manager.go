@@ -29,6 +29,9 @@ type entry struct {
 }
 
 type Manager struct {
+	// OnError receives store and routing failures. They never stop Run, so a
+	// full disk or locked database does not take the proxy entries down.
+	OnError  func(error)
 	mu       sync.Mutex
 	settings config.HealthCheck
 	url      string
@@ -77,8 +80,9 @@ func New(ctx context.Context, cfg config.Config, store Store, notifier Notifier,
 	return m, nil
 }
 
-// Run checks each enabled proxy independently. Saved next-check times survive
-// restarts; a missing time means the proxy is due immediately.
+// Run checks each enabled proxy independently until ctx is canceled. Saved
+// next-check times survive restarts; a missing time means the proxy is due
+// immediately.
 func (m *Manager) Run(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	var checks sync.WaitGroup
@@ -87,7 +91,6 @@ func (m *Manager) Run(parent context.Context) error {
 		checks.Wait()
 	}()
 	slots := make(chan struct{}, 16)
-	failures := make(chan error, 1)
 	for {
 		now := time.Now().UTC()
 		var due []struct {
@@ -125,12 +128,7 @@ func (m *Manager) Run(parent context.Context) error {
 				case <-ctx.Done():
 					return
 				}
-				if err := m.check(ctx, ref, item, settings, url); err != nil {
-					select {
-					case failures <- err:
-					default:
-					}
-				}
+				m.check(ctx, ref, item, settings, url)
 			}(work.ref, work.item, work.settings, work.url)
 		}
 		var timer *time.Timer
@@ -145,11 +143,6 @@ func (m *Manager) Run(parent context.Context) error {
 				timer.Stop()
 			}
 			return nil
-		case err := <-failures:
-			if timer != nil {
-				timer.Stop()
-			}
-			return err
 		case <-m.wake:
 		case <-timerC:
 		}
@@ -159,47 +152,48 @@ func (m *Manager) Run(parent context.Context) error {
 	}
 }
 
-func (m *Manager) check(ctx context.Context, ref routing.Ref, item *entry, settings config.HealthCheck, url string) error {
+func (m *Manager) check(ctx context.Context, ref routing.Ref, item *entry, settings config.HealthCheck, url string) {
 	probeCtx, cancel := context.WithTimeout(ctx, settings.Timeout.Value())
 	err := m.probe(probeCtx, item.proxy, url)
 	cancel()
 	if ctx.Err() != nil {
-		return nil
+		return
 	}
 	now := time.Now().UTC()
 	m.mu.Lock()
 	if m.entries[ref] != item {
 		m.mu.Unlock()
-		return nil
+		return
 	}
 	next := afterProbe(item.health, err, now, settings, rand.Float64())
-	if saveErr := m.store.SaveHealth(ctx, next); saveErr != nil {
-		item.checking = false
-		m.mu.Unlock()
-		m.signal()
-		if ctx.Err() != nil {
-			return nil
-		}
-		return fmt.Errorf("save health for %s/%s: %w", ref.ProviderID, ref.ProxyID, saveErr)
-	}
+	// An unsaved result still drives routing; the next check saves again.
+	saveErr := m.store.SaveHealth(ctx, next)
 	item.health = next
 	item.checking = false
 	if ctx.Err() != nil {
 		m.mu.Unlock()
-		return nil
+		return
 	}
 	// Keep a reconfiguration from accepting this result between the store write
 	// and the router notification.
 	notifyErr := m.notifier.HealthChanged(ctx, ref, next.Status)
 	m.mu.Unlock()
 	m.signal()
-	if notifyErr != nil && !errors.Is(notifyErr, routing.ErrNoAvailable) {
-		if ctx.Err() != nil {
-			return nil
-		}
-		return fmt.Errorf("notify routing for %s/%s: %w", ref.ProviderID, ref.ProxyID, notifyErr)
+	if ctx.Err() != nil {
+		return
 	}
-	return nil
+	if saveErr != nil {
+		m.report(fmt.Errorf("save health for %s/%s: %w", ref.ProviderID, ref.ProxyID, saveErr))
+	}
+	if notifyErr != nil && !errors.Is(notifyErr, routing.ErrNoAvailable) {
+		m.report(fmt.Errorf("notify routing for %s/%s: %w", ref.ProviderID, ref.ProxyID, notifyErr))
+	}
+}
+
+func (m *Manager) report(err error) {
+	if m.OnError != nil {
+		m.OnError(err)
+	}
 }
 
 // Reconfigure replaces the active proxy set after YAML and routing have been
