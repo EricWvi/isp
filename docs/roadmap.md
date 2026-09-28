@@ -191,7 +191,7 @@ SQLite 是以下运行时数据的事实来源：
 
 ```yaml
 server:
-  http_listen: 127.0.0.1:8080
+  http_listen: 127.0.0.1:38080
   socks5_listen: 127.0.0.1:30001
   socks5_enabled: true
   http_proxy_listen: 127.0.0.1:30002

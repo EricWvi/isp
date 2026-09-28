@@ -80,7 +80,7 @@ type Proxy struct {
 
 func Defaults() Config {
 	return Config{
-		Server:      Server{HTTPListen: "127.0.0.1:8080", SOCKS5Listen: "127.0.0.1:30001", SOCKS5Enabled: true, HTTPProxyListen: "127.0.0.1:30002", Database: "./data/isp.db"},
+		Server:      Server{HTTPListen: "127.0.0.1:38080", SOCKS5Listen: "127.0.0.1:30001", SOCKS5Enabled: true, HTTPProxyListen: "127.0.0.1:30002", Database: "./data/isp.db"},
 		HealthCheck: HealthCheck{URL: "https://www.gstatic.com/generate_204", IntervalMin: Duration(5 * time.Minute), IntervalMax: Duration(8 * time.Minute), Timeout: Duration(15 * time.Second), FailureThreshold: 3, BackoffMax: Duration(time.Hour)},
 	}
 }

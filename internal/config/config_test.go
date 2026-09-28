@@ -27,7 +27,7 @@ func TestDecodeDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HealthCheck.FailureThreshold != 3 || cfg.Server.HTTPListen != "127.0.0.1:8080" ||
+	if cfg.HealthCheck.FailureThreshold != 3 || cfg.Server.HTTPListen != "127.0.0.1:38080" ||
 		!cfg.Server.SOCKS5Enabled || cfg.Server.HTTPProxyEnabled || cfg.Server.HTTPProxyListen != "127.0.0.1:30002" {
 		t.Fatalf("defaults missing: %+v", cfg)
 	}

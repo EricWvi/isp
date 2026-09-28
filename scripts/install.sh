@@ -109,7 +109,7 @@ printf '%s\n' "$unit_text" >"$temp_dir/$service"
 
 cat >"$temp_dir/config.yaml" <<'YAML'
 server:
-  http_listen: 127.0.0.1:8080
+  http_listen: 127.0.0.1:38080
   socks5_enabled: false
   http_proxy_enabled: false
   database: ./data/isp.db

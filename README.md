@@ -2,24 +2,23 @@
 
 按 [roadmap](docs/roadmap.md) 分阶段实现的单机 IP 池服务。包含配置与状态存储、Provider 选路、本地 SOCKS5 和 HTTP 代理入口、健康检查与自动故障切换，以及本地管理页面。
 
-需要 Go 1.24+ 和 Node.js 20.19+。复制 `config.example.yaml` 为自己的配置文件后，可先验证配置并初始化状态数据库：
+需要 Go 1.24+ 和 Node.js 20.19+。从源码运行任何 Go 命令前，先构建前端资源：
+
+```sh
+cd frontend
+npm ci
+npm run build
+cd ..
+```
+
+复制 `config.example.yaml` 为自己的配置文件后，可先验证配置并初始化状态数据库：
 
 ```sh
 go run ./cmd/isp config-check config.example.yaml
 go run ./cmd/isp state-init config.example.yaml
 ```
 
-`state-init` 会在当前工作目录下按 `server.database` 创建 SQLite 文件。配置中的 `provider.id` 和代理 `id` 必须是稳定的英文小写字母、数字、连字符；编辑代理连接信息时保留原 ID。代理 ID 在所有 Provider 中全局唯一。管理页面和代理入口都只允许监听本机；SOCKS5 和 HTTP 代理端口至少为 30000。
-
-前端工程位于 `frontend/`：
-
-```sh
-cd frontend
-npm ci
-npm run build
-```
-
-前端产物会嵌入 Go 可执行文件；修改前端后，应先运行 `npm run build`，再构建或运行 Go 服务。仓库包含预构建的 `frontend/dist`，因此仅运行 Go 测试不需要安装 Node.js。
+`state-init` 会在当前工作目录下按 `server.database` 创建 SQLite 文件。配置中的 `provider.id` 和代理 `id` 必须是稳定的英文小写字母、数字、连字符；编辑代理连接信息时保留原 ID。代理 ID 在所有 Provider 中全局唯一。管理页面和代理入口都只允许监听本机；SOCKS5 和 HTTP 代理端口至少为 30000。前端产物会嵌入 Go 可执行文件；`frontend/dist` 不纳入版本控制。修改前端后，应重新运行 `npm --prefix frontend run build`，再构建或测试 Go 服务。
 
 阶段 2 的选路模块位于 `internal/routing`。新连接可读取一次 `Snapshot()`，已确认不可用时会得到“无代理”；手动选择允许选择已启用但尚未确认健康的代理。自动候选只包含健康状态为 `healthy` 的代理，自动切换开关开启时不会立刻轮换。SOCKS5 和 HTTP 各有一套独立的当前选择与自动切换状态。选路行为可用 `go test ./internal/routing ./internal/provider` 无网络验证。
 
@@ -34,7 +33,7 @@ go run ./cmd/isp auto-switch-http config.example.yaml on
 go run ./cmd/isp serve config.example.yaml
 ```
 
-服务启动后打开 `http://127.0.0.1:8080/`（或配置的 `server.http_listen`）。页面支持添加、编辑、启停和删除代理，手动选择或轮换代理，并控制自动故障切换；代理变更会写回 YAML。页面和 API 只监听本机地址，且没有登录认证，请勿经公网或反向代理开放。直接编辑 YAML 后仍需重启服务；服务运行时也不要用独立的 `select`、`auto-switch` 命令修改同一数据库，避免运行内存与数据库状态不一致。
+服务启动后打开 `http://127.0.0.1:38080/`（或配置的 `server.http_listen`）。页面会随系统设置自动切换亮色和暗色主题。页面支持添加、编辑、启停和删除代理，手动选择或轮换代理，并控制自动故障切换；代理变更会写回 YAML。页面和 API 只监听本机地址，且没有登录认证，请勿经公网或反向代理开放。直接编辑 YAML 后仍需重启服务；服务运行时也不要用独立的 `select`、`auto-switch` 命令修改同一数据库，避免运行内存与数据库状态不一致。
 
 `server.socks5_enabled` 和 `server.http_proxy_enabled` 分别控制两个代理入口，可以都关、都开或只开一个。默认只开 SOCKS5（`127.0.0.1:30001`）；HTTP 代理默认关闭，启用后监听 `127.0.0.1:30002`。`server.http_listen` 始终是独立的管理页面地址，关闭两个代理入口也不影响页面和健康检查。修改监听开关或地址后需重启；开启的监听地址不能重复。
 
@@ -78,9 +77,9 @@ bash scripts/release.sh
 curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | bash
 ```
 
-脚本自动选择 `amd64` 或 `arm64`，首次安装时创建程序、配置和数据目录，写入空代理池的默认配置，并通过 `sudo systemctl` 安装、启用和启动系统服务。服务进程仍以执行安装脚本的普通用户身份运行，不需要 linger 或 systemd 用户管理器。默认只监听本机管理页面，SOCKS5 和 HTTP 两个代理入口均关闭。再次执行会保留配置与数据库，先停止正在运行的服务，替换程序后重新启动；原本未运行的服务仍保持停止。首次安装后请编辑 `~/.config/isp-proxy/config.yaml`，填写上游代理并按需将 `server.socks5_enabled`、`server.http_proxy_enabled` 改为 `true`，再运行 `sudo systemctl restart isp-proxy.service`。日志可通过 `sudo journalctl -u isp-proxy.service -f` 查看。
+脚本自动选择 `amd64` 或 `arm64`，首次安装时创建程序、配置和数据目录，写入空代理池的默认配置，并通过 `sudo systemctl` 安装、启用和启动系统服务。服务进程仍以执行安装脚本的普通用户身份运行，不需要 linger 或 systemd 用户管理器。新安装默认只监听本机管理页面 `127.0.0.1:38080`，SOCKS5 和 HTTP 两个代理入口均关闭。再次执行会保留配置与数据库，先停止正在运行的服务，替换程序后重新启动；原本未运行的服务仍保持停止。已有安装如需使用新管理端口，请手动将 `~/.config/isp-proxy/config.yaml` 中的 `server.http_listen` 改为 `127.0.0.1:38080`，再运行 `sudo systemctl restart isp-proxy.service`。首次安装后请编辑配置，填写上游代理并按需将 `server.socks5_enabled`、`server.http_proxy_enabled` 改为 `true`，再重启服务。日志可通过 `sudo journalctl -u isp-proxy.service -f` 查看。
 
-服务模板为 [packaging/isp-proxy.service.in](packaging/isp-proxy.service.in)，安装到 `/etc/systemd/system/isp-proxy.service`；每次更新会覆盖该服务文件。若检测到以前安装的用户服务，脚本会先停用，再迁移到系统服务。工作目录固定为 `~/.local/share/isp-proxy`，默认配置中的 `server.database: ./data/isp.db` 会写入该目录下的 `data/isp.db`。如需安装指定版本，可使用 `curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | ISP_PROXY_VERSION=v0.1.0 bash`，把版本号换成已发布的 tag。
+服务模板为 [packaging/isp-proxy.service.in](packaging/isp-proxy.service.in)，安装到 `/etc/systemd/system/isp-proxy.service`；每次更新会覆盖该服务文件。若检测到以前安装的用户服务，脚本会先停用，再迁移到系统服务。工作目录固定为 `~/.local/share/isp-proxy`，默认配置中的 `server.database: ./data/isp.db` 会写入该目录下的 `data/isp.db`。如需安装指定版本，可使用 `curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | ISP_PROXY_VERSION=v0.1.1 bash`，把版本号换成已发布的 tag。
 
 配置文件可能包含上游密码，建议权限为 `0600`，且不要提交真实凭据。`server.database` 的相对路径相对于启动时的工作目录；使用服务管理器时请固定工作目录，或在 YAML 中使用绝对路径。监听地址只允许本机地址，不要把无认证的管理页面转发到公网。启动前可用 `config-check` 校验 YAML；若 SQLite 文件损坏，服务会报错而不会自动清空它。
 

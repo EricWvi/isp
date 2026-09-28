@@ -83,6 +83,7 @@ binary="$HOME/.local/bin/isp-proxy"
 unit="$ISP_PROXY_SYSTEMD_DIR/isp-proxy.service"
 grep -q 'socks5_enabled: false' "$config"
 grep -q 'http_proxy_enabled: false' "$config"
+grep -q 'http_listen: 127.0.0.1:38080' "$config"
 grep -Fxq 'User=tester' "$unit"
 grep -Fxq "WorkingDirectory=$HOME/.local/share/isp-proxy" "$unit"
 [[ -d $HOME/.local/share/isp-proxy/data ]]
@@ -91,10 +92,12 @@ grep -Fxq "WorkingDirectory=$HOME/.local/share/isp-proxy" "$unit"
 echo 'installer test passed: first system service install'
 
 printf '# preserve\n' >>"$config"
+sed -i 's/127.0.0.1:38080/127.0.0.1:8080/' "$config"
 : >"$TEST_LOG"
 TEST_BIN_VERSION=v2 run_install
 grep -q '^# v2$' "$binary"
 grep -q '# preserve' "$config"
+grep -q 'http_listen: 127.0.0.1:8080' "$config"
 grep -q '^stop isp-proxy.service$' "$TEST_LOG"
 grep -q '^start isp-proxy.service$' "$TEST_LOG"
 echo 'installer test passed: running service update'
