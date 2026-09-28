@@ -214,7 +214,24 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, snapshot routi
 		}
 	}
 	w.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(w, response.Body)
+	// Flush every chunk so event streams and chunked output reach the client
+	// as soon as the upstream sends them.
+	controller := http.NewResponseController(w)
+	buffer := make([]byte, 32*1024)
+	for {
+		n, err := response.Body.Read(buffer)
+		if n > 0 {
+			if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
+				return
+			}
+			if controller.Flush() != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 // transport keeps one pool of upstream connections per proxy address and

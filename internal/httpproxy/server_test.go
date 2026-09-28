@@ -440,3 +440,31 @@ func TestForwardReusesUpstreamConnection(t *testing.T) {
 		t.Fatalf("upstream connections: %v", remotes)
 	}
 }
+
+func TestForwardFlushesStreamingResponse(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: first\n\n"))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	t.Cleanup(upstream.Close)
+	t.Cleanup(func() { close(release) })
+	selector := &testSelector{}
+	selector.set(strings.TrimPrefix(upstream.URL, "http://"), "", "")
+	gateway := startGateway(t, &Handler{Selector: selector})
+	proxyURL, _ := url.Parse("http://" + gateway)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 3 * time.Second}
+	response, err := client.Get("http://events.invalid/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	// The upstream holds the stream open, so this read only succeeds if the
+	// gateway flushes each chunk instead of buffering it.
+	event := make([]byte, len("data: first\n\n"))
+	if _, err := io.ReadFull(response.Body, event); err != nil || string(event) != "data: first\n\n" {
+		t.Fatalf("first event %q, %v", event, err)
+	}
+}
