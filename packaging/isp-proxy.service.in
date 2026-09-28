@@ -1,0 +1,12 @@
+[Unit]
+Description=ISP Proxy
+
+[Service]
+Type=exec
+WorkingDirectory=%h/.local/share/isp-proxy
+ExecStart=%h/.local/bin/isp-proxy serve %h/.config/isp-proxy/config.yaml
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

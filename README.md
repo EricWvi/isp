@@ -68,6 +68,20 @@ bash scripts/release.sh
 
 发布脚本使用锁定的 npm 依赖先重建 `frontend/dist`，运行 Go 测试，再以 `CGO_ENABLED=0`、`-trimpath` 和固定空 build ID 编译 `release/isp`。发布时只需复制该可执行文件、自己的 YAML 配置和 SQLite 状态文件；运行时不需要 Node.js 或单独的前端目录。脚本按当前主机系统与架构编译，Linux 和 macOS 需分别执行。服务以 JSON 日志输出到标准错误；正常收到 SIGINT/SIGTERM 时停止接受新连接、关闭活动 SOCKS5 连接、等待 HTTP 请求退出并关闭数据库。管理配置已写入 YAML、但运行时更新失败时会报错退出，应先检查日志并重启以重新加载 YAML。
 
+推送匹配 `v*` 的 tag 后，GitHub Actions 会重建前端、运行 Go 测试，并在同名 GitHub Release 中发布两个 Linux 可执行文件：`isp-proxy-linux-amd64` 和 `isp-proxy-linux-arm64`。它们已嵌入管理页面，无需在目标机器安装 Go 或 Node.js。
+
+### systemd 用户服务（Linux）
+
+以运行服务的普通用户登录服务器，执行以下命令安装或更新最新 GitHub Release：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | bash
+```
+
+脚本自动选择 `amd64` 或 `arm64`，首次安装时创建程序、配置、数据和 systemd 用户服务目录，写入空代理池的默认配置并启动管理页面。默认关闭 SOCKS5 和 HTTP 两个代理入口。再次执行会保留配置与数据库，先停止正在运行的服务，替换程序后重新启动；原本未运行的服务仍保持停止。脚本会尝试开启 linger，让用户未登录时也能开机启动；若当前账号无法授权，会提示补执行的命令。首次安装后请编辑 `~/.config/isp-proxy/config.yaml`，填写上游代理并按需将 `server.socks5_enabled`、`server.http_proxy_enabled` 改为 `true`，再运行 `systemctl --user restart isp-proxy.service`。日志可通过 `journalctl --user -u isp-proxy.service -f` 查看。
+
+服务模板为 [packaging/isp-proxy.service.in](packaging/isp-proxy.service.in)，安装到 `~/.config/systemd/user/isp-proxy.service`；每次更新会覆盖该服务文件。工作目录固定为 `~/.local/share/isp-proxy`，示例中的 `server.database: ./data/isp.db` 会写入该目录下的 `data/isp.db`。如需安装指定版本，可使用 `curl -fsSL https://raw.githubusercontent.com/EricWvi/isp/main/scripts/install.sh | ISP_PROXY_VERSION=v1.0.0 bash`，把版本号换成已发布的 tag。
+
 配置文件可能包含上游密码，建议权限为 `0600`，且不要提交真实凭据。`server.database` 的相对路径相对于启动时的工作目录；使用服务管理器时请固定工作目录，或在 YAML 中使用绝对路径。监听地址只允许本机地址，不要把无认证的管理页面转发到公网。启动前可用 `config-check` 校验 YAML；若 SQLite 文件损坏，服务会报错而不会自动清空它。
 
 备份前优雅停止服务，再把 YAML 和 SQLite 数据库文件作为同一份快照复制保存。SQLite 使用 WAL 模式；如果必须在线备份，应使用 SQLite 在线备份 API，不能只复制运行中的 `.db` 文件而忽略 `-wal`。恢复时也先停止服务，保留故障现场副本，再将同一份备份中的 YAML 和数据库放回原路径，运行 `config-check` 后启动。若仅恢复 YAML 而不恢复数据库，运行时选择与健康状态可能对应不上当前代理清单；服务会按稳定 ID 重新关联，无法关联的旧状态不会参与选路。磁盘写满时应先释放空间并检查日志，再重启服务确认持久化状态。

@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+      - name: Test
+        run: go test ./...
+      - name: Build Linux binaries
+        run: |
+          mkdir -p release
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build \
+              -trimpath -buildvcs=false -ldflags=-buildid= \
+              -o "release/isp-proxy-linux-$arch" ./cmd/isp
+          done
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/isp-proxy-linux-amd64 release/isp-proxy-linux-arm64 --clobber
+          else
+            gh release create "$TAG" release/isp-proxy-linux-amd64 release/isp-proxy-linux-arm64 \
+              --verify-tag --generate-notes
+          fi
