@@ -70,7 +70,7 @@ func startHTTPUpstream(t *testing.T, destination, username, password string, acc
 			defer client.Close()
 			_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 			_ = buffered.Flush()
-			go func() { _, _ = io.Copy(target, buffered); target.Close() }()
+			go func() { _, _ = io.Copy(target, buffered); _ = target.(*net.TCPConn).CloseWrite() }()
 			_, _ = io.Copy(client, target)
 			return
 		}
@@ -362,5 +362,51 @@ func TestIdleKeepAliveClientConnectionIsClosed(t *testing.T) {
 		t.Fatal("unexpected data on idle connection")
 	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 		t.Fatal("idle keep-alive connection remained open")
+	}
+}
+
+func TestCONNECTClientHalfCloseKeepsResponse(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+		_, _ = conn.Write([]byte("done"))
+	}()
+	var accepts atomic.Int32
+	upstream := startHTTPUpstream(t, listener.Addr().String(), "", "", &accepts)
+	selector := &testSelector{}
+	selector.set(upstream, "", "")
+	gateway := startGateway(t, &Handler{Selector: selector})
+	conn, err := net.Dial("tcp", gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.WriteString(conn, "CONNECT target.invalid:443 HTTP/1.1\r\nHost: target.invalid:443\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT response %v, %v", response, err)
+	}
+	if _, err := conn.Write([]byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	received, err := io.ReadAll(reader)
+	if err != nil || string(received) != "done" {
+		t.Fatalf("half-close response %q, %v", received, err)
 	}
 }

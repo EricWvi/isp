@@ -116,6 +116,14 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
+// CloseWrite forwards a client's half-close so the upstream can still answer.
+func (c *bufferedConn) CloseWrite() error {
+	if half, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return half.CloseWrite()
+	}
+	return c.Conn.Close()
+}
+
 func proxyURL(proxy config.Proxy) *url.URL {
 	u := &url.URL{Scheme: "http", Host: net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port))}
 	if proxy.Username != "" {
@@ -170,7 +178,9 @@ func (h *Handler) connect(w http.ResponseWriter, r *http.Request, snapshot routi
 		return
 	}
 	_ = client.SetDeadline(time.Time{})
-	tunnel.Relay(r.Context(), client, buffered, upstream, durationOr(h.IdleTimeout, 5*time.Minute))
+	// The request context ends when the hijacked client half-closes, so the
+	// tunnel lives until Relay finishes or Close tears it down.
+	tunnel.Relay(context.Background(), client, buffered, upstream, durationOr(h.IdleTimeout, 5*time.Minute))
 }
 
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, snapshot routing.Snapshot) {
