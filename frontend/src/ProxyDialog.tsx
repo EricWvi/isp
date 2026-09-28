@@ -27,12 +27,13 @@ export function ProxyDialog({ providerId, proxy, open, busy, onOpenChange, onSav
   const [password, setPassword] = useState('')
   const [clearPassword, setClearPassword] = useState(false)
   const [enabled, setEnabled] = useState(proxy?.enabled ?? true)
+  const [udpCapability, setUdpCapability] = useState(proxy?.udp_capability ?? 'unknown')
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     const value: Record<string, unknown> = {
       id: proxy?.id ?? id.trim(), name: name.trim(), host: host.trim(),
-      port: Number(port), enabled, username,
+      port: Number(port), enabled, username, udp_capability: udpCapability,
     }
     if (!proxy || password || clearPassword || !username) {
       value.password = clearPassword || !username ? '' : password
@@ -65,6 +66,14 @@ export function ProxyDialog({ providerId, proxy, open, busy, onOpenChange, onSav
             <div className="grid gap-2"><Label htmlFor="proxy-password">密码</Label><Input id="proxy-password" type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="new-password" placeholder={proxy?.has_password ? '留空则保持原密码' : '可选'} disabled={clearPassword} /></div>
           </div>
           {proxy?.has_password && <label className="flex items-center gap-2 text-sm text-muted-foreground"><input type="checkbox" checked={clearPassword} onChange={event => setClearPassword(event.target.checked)} />清除已保存的密码</label>}
+          <div className="grid gap-2">
+            <Label htmlFor="proxy-udp">UDP 能力</Label>
+            <select id="proxy-udp" value={udpCapability} onChange={event => setUdpCapability(event.target.value as Proxy['udp_capability'])} className="h-9 rounded-md border border-input bg-background px-3 text-sm">
+              <option value="unknown">未知（尝试上游）</option>
+              <option value="supported">已确认支持</option>
+              <option value="unsupported">不支持（直接拒绝）</option>
+            </select>
+          </div>
           <div className="flex items-center justify-between rounded-lg border p-3"><Label htmlFor="proxy-enabled">启用代理</Label><Switch id="proxy-enabled" checked={enabled} onCheckedChange={setEnabled} /></div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>

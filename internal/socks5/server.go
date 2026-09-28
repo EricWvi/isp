@@ -10,12 +10,14 @@ import (
 	"sync"
 	"time"
 
+	"isp/internal/config"
 	"isp/internal/routing"
 )
 
 const (
 	version        = 5
 	connectCommand = 1
+	udpCommand     = 3
 	noAuth         = 0
 	userPassword   = 2
 )
@@ -30,6 +32,40 @@ type Server struct {
 	HandshakeTimeout time.Duration
 	IdleTimeout      time.Duration
 	OnUpstreamError  func(routing.Ref, error)
+	udpMu            sync.RWMutex
+	udpObserved      map[routing.Ref]udpObservation
+}
+
+type udpObservation struct {
+	proxy      config.Proxy
+	capability string
+}
+
+// UDPCapability reports configured or recently observed upstream support.
+// Observations expire automatically when the proxy configuration changes.
+func (s *Server) UDPCapability(ref routing.Ref, proxy config.Proxy) string {
+	if proxy.UDPCapability == "unsupported" {
+		return "unsupported"
+	}
+	s.udpMu.RLock()
+	observed, ok := s.udpObserved[ref]
+	s.udpMu.RUnlock()
+	if ok && observed.proxy == proxy {
+		return observed.capability
+	}
+	if proxy.UDPCapability == "supported" {
+		return "supported"
+	}
+	return "unknown"
+}
+
+func (s *Server) observeUDP(ref routing.Ref, proxy config.Proxy, capability string) {
+	s.udpMu.Lock()
+	if s.udpObserved == nil {
+		s.udpObserved = make(map[routing.Ref]udpObservation)
+	}
+	s.udpObserved[ref] = udpObservation{proxy: proxy, capability: capability}
+	s.udpMu.Unlock()
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
@@ -102,6 +138,11 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		writeFailure(client, 1)
 		return
 	}
+	if request[1] == udpCommand && s.UDPCapability(snapshot.Ref, snapshot.Proxy) == "unsupported" {
+		client.SetWriteDeadline(time.Now().Add(handshakeTimeout))
+		writeFailure(client, 7)
+		return
+	}
 	address := net.JoinHostPort(snapshot.Proxy.Host, strconv.Itoa(snapshot.Proxy.Port))
 	dialCtx, cancel := context.WithTimeout(ctx, durationOr(s.DialTimeout, 10*time.Second))
 	defer cancel()
@@ -124,6 +165,22 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		return
 	}
 	upstream.SetDeadline(time.Time{})
+	if request[1] == udpCommand {
+		if reply[1] != 0 {
+			if reply[1] == 7 {
+				s.observeUDP(snapshot.Ref, snapshot.Proxy, "unsupported")
+			}
+			client.SetWriteDeadline(time.Now().Add(handshakeTimeout))
+			_ = writeAll(client, reply)
+			return
+		}
+		s.observeUDP(snapshot.Ref, snapshot.Proxy, "supported")
+		if err := s.serveUDPAssociation(ctx, client, upstream, reply, request); err != nil {
+			client.SetWriteDeadline(time.Now().Add(handshakeTimeout))
+			writeFailure(client, 1)
+		}
+		return
+	}
 	client.SetWriteDeadline(time.Now().Add(handshakeTimeout))
 	if err := writeAll(client, reply); err != nil || reply[1] != 0 {
 		return
@@ -169,8 +226,8 @@ func readRequest(conn net.Conn) ([]byte, byte, error) {
 	if header[0] != version || header[2] != 0 {
 		return nil, 1, errors.New("invalid SOCKS5 request header")
 	}
-	if header[1] != connectCommand {
-		return nil, 7, errors.New("only CONNECT is supported")
+	if header[1] != connectCommand && header[1] != udpCommand {
+		return nil, 7, errors.New("only CONNECT and UDP ASSOCIATE are supported")
 	}
 	var remaining int
 	switch header[3] {

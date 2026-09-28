@@ -168,12 +168,13 @@ export default function App() {
             </CardHeader>
             <CardContent>
               {group.proxies.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">尚无代理</p> : <div className="overflow-x-auto"><Table>
-                <TableHeader><TableRow><TableHead>代理</TableHead><TableHead>状态</TableHead><TableHead>最近检测</TableHead><TableHead>连续失败</TableHead><TableHead>下次检测</TableHead><TableHead>启停</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+                <TableHeader><TableRow><TableHead>代理</TableHead><TableHead>状态</TableHead><TableHead>UDP</TableHead><TableHead>最近检测</TableHead><TableHead>连续失败</TableHead><TableHead>下次检测</TableHead><TableHead>启停</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
                 <TableBody>{group.proxies.map(proxy => {
                   const selected = dashboard.selection.provider_id === group.id && dashboard.selection.proxy_id === proxy.id
                   return <TableRow key={proxy.id} data-state={selected ? 'selected' : undefined}>
                     <TableCell><div className="flex items-center gap-2"><span className="font-medium">{proxy.name || proxy.id}</span>{selected && <Badge variant="outline">当前</Badge>}</div><p className="mt-1 font-mono text-xs text-muted-foreground">{proxy.host}:{proxy.port}</p><p className="mt-1 text-xs text-muted-foreground">{proxy.id}</p></TableCell>
                     <TableCell><StatusBadge status={proxy.status} />{proxy.last_error && <p title={proxy.last_error} className="mt-1 max-w-40 truncate text-xs text-destructive">{proxy.last_error}</p>}</TableCell>
+                    <TableCell>{proxy.udp_status === 'supported' ? '支持' : proxy.udp_status === 'unsupported' ? '不支持' : '未知'}</TableCell>
                     <TableCell>{timeLabel(proxy.last_checked_at)}</TableCell><TableCell>{proxy.consecutive_failures}</TableCell><TableCell>{timeLabel(proxy.next_check_at)}</TableCell><TableCell>{proxy.enabled ? '启用' : '停用'}</TableCell>
                     <TableCell>{proxyActions(group, proxy)}</TableCell>
                   </TableRow>

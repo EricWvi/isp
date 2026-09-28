@@ -13,4 +13,5 @@ providers:
   - id: proxy-seller
     type: proxy-seller
     enabled: true
+    # 每个代理可选 udp_capability: unknown | supported | unsupported
     proxies: []

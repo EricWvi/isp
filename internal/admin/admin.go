@@ -21,10 +21,13 @@ var errNotFound = errors.New("provider or proxy not found")
 var errBadRequest = errors.New("invalid proxy request")
 
 type App struct {
-	Config  *config.File
-	Router  *routing.Router
-	Health  *health.Manager
-	Store   *state.Store
+	Config        *config.File
+	Router        *routing.Router
+	Health        *health.Manager
+	Store         *state.Store
+	UDPCapability interface {
+		UDPCapability(routing.Ref, config.Proxy) string
+	}
 	OnFatal func(error)
 	mu      sync.Mutex
 }
@@ -45,6 +48,8 @@ type proxyView struct {
 	Enabled             bool   `json:"enabled"`
 	Username            string `json:"username"`
 	HasPassword         bool   `json:"has_password"`
+	UDPCapability       string `json:"udp_capability"`
+	UDPStatus           string `json:"udp_status"`
 	Status              string `json:"status"`
 	ConsecutiveFailures int    `json:"consecutive_failures"`
 	LastCheckedAt       string `json:"last_checked_at"`
@@ -68,13 +73,21 @@ type stateView struct {
 }
 
 type proxyInput struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Host     string  `json:"host"`
-	Port     int     `json:"port"`
-	Enabled  bool    `json:"enabled"`
-	Username string  `json:"username"`
-	Password *string `json:"password"`
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	Host          string  `json:"host"`
+	Port          int     `json:"port"`
+	Enabled       bool    `json:"enabled"`
+	Username      string  `json:"username"`
+	Password      *string `json:"password"`
+	UDPCapability *string `json:"udp_capability"`
+}
+
+func udpCapability(proxy config.Proxy) string {
+	if proxy.UDPCapability == "" {
+		return "unknown"
+	}
+	return proxy.UDPCapability
 }
 
 func (a *App) Handler() http.Handler {
@@ -116,6 +129,10 @@ func (a *App) writeState(w http.ResponseWriter, r *http.Request) {
 	for _, group := range cfg.Providers {
 		provider := providerView{ID: group.ID, Type: group.Type, Enabled: group.Enabled, Proxies: make([]proxyView, 0, len(group.Proxies))}
 		for _, proxy := range group.Proxies {
+			capability := udpCapability(proxy)
+			if a.UDPCapability != nil {
+				capability = a.UDPCapability.UDPCapability(routing.Ref{ProviderID: group.ID, ProxyID: proxy.ID}, proxy)
+			}
 			health, found := known[routing.Ref{ProviderID: group.ID, ProxyID: proxy.ID}]
 			status := "unknown"
 			if found {
@@ -123,7 +140,7 @@ func (a *App) writeState(w http.ResponseWriter, r *http.Request) {
 			}
 			provider.Proxies = append(provider.Proxies, proxyView{
 				ID: proxy.ID, Name: proxy.Name, Host: proxy.Host, Port: proxy.Port, Enabled: proxy.Enabled,
-				Username: proxy.Username, HasPassword: proxy.Password != "", Status: status,
+				Username: proxy.Username, HasPassword: proxy.Password != "", UDPCapability: udpCapability(proxy), UDPStatus: capability, Status: status,
 				ConsecutiveFailures: health.ConsecutiveFailures, LastCheckedAt: timeString(health.LastCheckedAt),
 				LastResult: health.LastResult, LastError: health.LastError, NextCheckAt: timeString(health.NextCheckAt),
 			})
@@ -206,6 +223,9 @@ func (a *App) createProxy(w http.ResponseWriter, r *http.Request) {
 		if input.Password != nil {
 			proxy.Password = *input.Password
 		}
+		if input.UDPCapability != nil {
+			proxy.UDPCapability = *input.UDPCapability
+		}
 		group.Proxies = append(group.Proxies, proxy)
 		return nil
 	})
@@ -227,6 +247,9 @@ func (a *App) updateProxy(w http.ResponseWriter, r *http.Request) {
 		proxy.Name, proxy.Host, proxy.Port, proxy.Enabled, proxy.Username = input.Name, input.Host, input.Port, input.Enabled, input.Username
 		if input.Password != nil {
 			proxy.Password = *input.Password
+		}
+		if input.UDPCapability != nil {
+			proxy.UDPCapability = *input.UDPCapability
 		}
 		return nil
 	})

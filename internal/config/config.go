@@ -64,13 +64,14 @@ type Provider struct {
 }
 
 type Proxy struct {
-	ID       string `yaml:"id" json:"id"`
-	Name     string `yaml:"name" json:"name"`
-	Host     string `yaml:"host" json:"host"`
-	Port     int    `yaml:"port" json:"port"`
-	Enabled  bool   `yaml:"enabled" json:"enabled"`
-	Username string `yaml:"username" json:"username"`
-	Password string `yaml:"password" json:"password"`
+	ID            string `yaml:"id" json:"id"`
+	Name          string `yaml:"name" json:"name"`
+	Host          string `yaml:"host" json:"host"`
+	Port          int    `yaml:"port" json:"port"`
+	Enabled       bool   `yaml:"enabled" json:"enabled"`
+	Username      string `yaml:"username" json:"username"`
+	Password      string `yaml:"password" json:"password"`
+	UDPCapability string `yaml:"udp_capability,omitempty" json:"udp_capability"`
 }
 
 func Defaults() Config {
@@ -156,6 +157,11 @@ func (c Config) Validate() error {
 			}
 			if len(proxy.Username) > 255 || len(proxy.Password) > 255 {
 				return fmt.Errorf("%s credentials exceed SOCKS5 limit of 255 bytes", loc)
+			}
+			switch proxy.UDPCapability {
+			case "", "unknown", "supported", "unsupported":
+			default:
+				return fmt.Errorf("%s.udp_capability must be unknown, supported or unsupported", loc)
 			}
 		}
 	}

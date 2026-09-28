@@ -6,6 +6,8 @@ export type Proxy = {
   enabled: boolean
   username: string
   has_password: boolean
+  udp_capability: 'unknown' | 'supported' | 'unsupported'
+  udp_status: 'unknown' | 'supported' | 'unsupported'
   status: 'unknown' | 'healthy' | 'suspect' | 'unavailable'
   consecutive_failures: number
   last_checked_at: string

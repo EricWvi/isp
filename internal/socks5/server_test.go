@@ -336,7 +336,7 @@ func TestHalfCloseAndCancellation(t *testing.T) {
 	second.Close()
 }
 
-func TestNoProxyNeverDialsDirectAndRejectsUDP(t *testing.T) {
+func TestNoProxyNeverDialsDirectForTCPOrUDP(t *testing.T) {
 	selector := &testSelector{}
 	gateway, _, _ := startGateway(t, &Server{Selector: selector})
 	target, err := net.Listen("tcp", "127.0.0.1:0")
@@ -367,7 +367,7 @@ func TestNoProxyNeverDialsDirectAndRejectsUDP(t *testing.T) {
 	}
 	client, status = connectClient(t, gateway, 3)
 	client.Close()
-	if status != 7 {
+	if status != 1 {
 		t.Fatalf("UDP request status %d", status)
 	}
 }

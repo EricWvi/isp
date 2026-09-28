@@ -133,6 +133,7 @@ func run(args []string) (runErr error) {
 			logger.Error("schedule health recheck failed", "provider_id", ref.ProviderID, "proxy_id", ref.ProxyID, "error", reportErr)
 		}
 	}}
+	app.UDPCapability = server
 	results := make(chan error, 3)
 	go func() { results <- manager.Run(serveCtx) }()
 	go func() { results <- server.Serve(serveCtx, listener) }()
