@@ -2,6 +2,8 @@ package routing
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -16,6 +18,7 @@ var (
 	ErrNoAvailable   = errors.New("no available proxy")
 	ErrNoAlternative = errors.New("no other available proxy; current selection kept")
 	ErrNotEnabled    = errors.New("proxy does not exist or is disabled")
+	ErrConflict      = errors.New("current selection has changed")
 )
 
 type Ref struct {
@@ -122,9 +125,37 @@ func (r *Router) Selection() state.Selection {
 	return r.selection
 }
 
+func (r *Router) SelectionRevision() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.selectionRevision()
+}
+
+func (r *Router) SelectionWithRevision() (state.Selection, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.selection, r.selectionRevision()
+}
+
+func (r *Router) selectionRevision() string {
+	data, _ := json.Marshal(r.selection)
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
 func (r *Router) SetAutoSwitch(ctx context.Context, enabled bool) error {
+	return r.setAutoSwitch(ctx, "", enabled)
+}
+
+func (r *Router) SetAutoSwitchIfRevision(ctx context.Context, expected string, enabled bool) error {
+	return r.setAutoSwitch(ctx, expected, enabled)
+}
+
+func (r *Router) setAutoSwitch(ctx context.Context, expected string, enabled bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if expected != "" && expected != r.selectionRevision() {
+		return ErrConflict
+	}
 	if r.selection.AutoSwitch == enabled {
 		return nil
 	}
@@ -140,8 +171,19 @@ func (r *Router) SetAutoSwitch(ctx context.Context, enabled bool) error {
 // Select accepts any enabled proxy, including one whose health is not yet
 // confirmed. Manual selection does not change the automatic switch setting.
 func (r *Router) Select(ctx context.Context, ref Ref) error {
+	return r.selectProxy(ctx, "", ref)
+}
+
+func (r *Router) SelectIfRevision(ctx context.Context, expected string, ref Ref) error {
+	return r.selectProxy(ctx, expected, ref)
+}
+
+func (r *Router) selectProxy(ctx context.Context, expected string, ref Ref) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if expected != "" && expected != r.selectionRevision() {
+		return ErrConflict
+	}
 	if !r.findEnabled(ref) {
 		return ErrNotEnabled
 	}
@@ -152,8 +194,19 @@ func (r *Router) Select(ctx context.Context, ref Ref) error {
 }
 
 func (r *Router) Rotate(ctx context.Context) error {
+	return r.rotate(ctx, "")
+}
+
+func (r *Router) RotateIfRevision(ctx context.Context, expected string) error {
+	return r.rotate(ctx, expected)
+}
+
+func (r *Router) rotate(ctx context.Context, expected string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if expected != "" && expected != r.selectionRevision() {
+		return ErrConflict
+	}
 	current := Ref{r.selection.ProviderID, r.selection.ProxyID}
 	next, ok := r.next(current, true)
 	if !ok {

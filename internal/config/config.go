@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -197,42 +198,76 @@ func validHTTPURL(raw string) bool {
 }
 
 type File struct {
-	mu   sync.Mutex
-	path string
-	cfg  Config
+	mu       sync.Mutex
+	path     string
+	cfg      Config
+	revision string
 }
 
+var ErrConflict = errors.New("configuration has changed")
+var ErrInvalid = errors.New("invalid configuration")
+var ErrWrite = errors.New("cannot write configuration")
+
 func Open(path string) (*File, error) {
-	cfg, err := Load(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return &File{path: path, cfg: cfg}, nil
+	cfg, err := Decode(data)
+	if err != nil {
+		return nil, err
+	}
+	return &File{path: path, cfg: cfg, revision: revision(data)}, nil
 }
 
 func (f *File) Snapshot() Config {
+	cfg, _ := f.SnapshotWithRevision()
+	return cfg
+}
+
+func (f *File) SnapshotWithRevision() (Config, string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return clone(f.cfg)
+	return clone(f.cfg), f.revision
 }
 
 // Update serializes read-modify-write operations and publishes only after a durable rename.
 func (f *File) Update(change func(*Config) error) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.updateLocked(change)
+}
+
+func (f *File) UpdateIfRevision(expected string, change func(*Config) error) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if expected == "" || expected != f.revision {
+		return f.revision, ErrConflict
+	}
+	if err := f.updateLocked(change); err != nil {
+		return f.revision, err
+	}
+	return f.revision, nil
+}
+
+func (f *File) updateLocked(change func(*Config) error) error {
 	next := clone(f.cfg)
 	if err := change(&next); err != nil {
 		return err
 	}
 	if err := next.Validate(); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	if err := writeAtomic(f.path, next); err != nil {
-		return err
+	data, err := writeAtomic(f.path, next)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrWrite, err)
 	}
 	f.cfg = next
+	f.revision = revision(data)
 	return nil
 }
+
+func revision(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
 
 func clone(c Config) Config {
 	c.Providers = append([]Provider(nil), c.Providers...)
@@ -242,18 +277,24 @@ func clone(c Config) Config {
 	return c
 }
 
-func writeAtomic(path string, cfg Config) error {
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
+func writeAtomic(path string, cfg Config) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := yaml.NewEncoder(&buffer)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(cfg); err != nil {
+		return nil, err
 	}
+	if err := encoder.Close(); err != nil {
+		return nil, err
+	}
+	data := buffer.Bytes()
 	if _, err := Decode(data); err != nil {
-		return fmt.Errorf("verify serialized config: %w", err)
+		return nil, fmt.Errorf("verify serialized config: %w", err)
 	}
 	dir := filepath.Dir(path)
 	file, err := os.CreateTemp(dir, ".isp-config-*")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.Remove(file.Name())
 	mode := os.FileMode(0600)
@@ -262,36 +303,30 @@ func writeAtomic(path string, cfg Config) error {
 	}
 	if err := file.Chmod(mode); err != nil {
 		file.Close()
-		return err
+		return nil, err
 	}
-	encoder := yaml.NewEncoder(file)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(cfg); err != nil {
+	if _, err := file.Write(data); err != nil {
 		file.Close()
-		return err
-	}
-	if err := encoder.Close(); err != nil {
-		file.Close()
-		return err
+		return nil, err
 	}
 	if err := file.Sync(); err != nil {
 		file.Close()
-		return err
+		return nil, err
 	}
 	if err := file.Close(); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := Load(file.Name()); err != nil {
-		return fmt.Errorf("verify temporary config: %w", err)
+		return nil, fmt.Errorf("verify temporary config: %w", err)
 	}
 	if err := os.Rename(file.Name(), path); err != nil {
-		return err
+		return nil, err
 	}
 	if d, err := os.Open(dir); err == nil {
-		defer d.Close()
-		if err := d.Sync(); err != nil {
-			return err
-		}
+		// The replacement is already visible. A directory sync failure cannot
+		// be reported as a failed update without diverging from the disk state.
+		_ = d.Sync()
+		_ = d.Close()
 	}
-	return nil
+	return data, nil
 }

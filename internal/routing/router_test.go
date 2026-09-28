@@ -340,3 +340,23 @@ func TestPersistenceFailureDoesNotPublishChoice(t *testing.T) {
 		t.Fatal("failed setting change reached memory")
 	}
 }
+
+func TestSelectionRevisionRejectsConcurrentChange(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	cfg := testConfig(group("seller", proxy("one"), proxy("two")))
+	r := openRouter(t, cfg, s)
+	initial := r.SelectionRevision()
+	if err := r.SelectIfRevision(ctx, initial, Ref{"seller", "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SelectIfRevision(ctx, initial, Ref{"seller", "two"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale selection accepted: %v", err)
+	}
+	if err := r.SetAutoSwitchIfRevision(ctx, initial, true); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale toggle accepted: %v", err)
+	}
+	if selected(r) != (Ref{"seller", "one"}) || r.Selection().AutoSwitch {
+		t.Fatalf("conflicting request changed state: %+v", r.Selection())
+	}
+}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,5 +127,33 @@ func TestFileUpdateWriteFailureDoesNotPublish(t *testing.T) {
 	}
 	if f.Snapshot().Providers[0].Proxies[0].Port != 1080 {
 		t.Fatal("failed write reached memory")
+	}
+}
+
+func TestFileRevisionRejectsStaleUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(sample), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, initial := f.SnapshotWithRevision()
+	updated, err := f.UpdateIfRevision(initial, func(c *Config) error {
+		c.Providers[0].Proxies[0].Name = "updated"
+		return nil
+	})
+	if err != nil || updated == initial {
+		t.Fatalf("revision did not advance: %q, %v", updated, err)
+	}
+	if _, err := f.UpdateIfRevision(initial, func(c *Config) error {
+		c.Providers[0].Proxies[0].Name = "stale"
+		return nil
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale update accepted: %v", err)
+	}
+	if f.Snapshot().Providers[0].Proxies[0].Name != "updated" {
+		t.Fatal("stale update changed configuration")
 	}
 }

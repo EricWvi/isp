@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"isp"
+	"isp/internal/admin"
 	"isp/internal/config"
 	"isp/internal/health"
 	"isp/internal/routing"
@@ -44,10 +49,11 @@ func run(args []string) error {
 	default:
 		return usage()
 	}
-	cfg, err := config.Load(args[1])
+	file, err := config.Open(args[1])
 	if err != nil {
 		return err
 	}
+	cfg := file.Snapshot()
 	if command == "config-check" {
 		fmt.Println("configuration valid")
 		return nil
@@ -85,29 +91,65 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	static, err := isp.FrontendHandler()
+	if err != nil {
+		return fmt.Errorf("frontend build missing: %w", err)
+	}
 	listener, err := net.Listen("tcp", cfg.Server.SOCKS5Listen)
 	if err != nil {
 		return err
 	}
+	defer listener.Close()
+	httpListener, err := net.Listen("tcp", cfg.Server.HTTPListen)
+	if err != nil {
+		return err
+	}
+	defer httpListener.Close()
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	app := &admin.App{Config: file, Router: router, Health: manager, Store: store, OnFatal: func(err error) {
+		log.Printf("management update failed after YAML write: %v", err)
+		cancel()
+	}}
+	mux := http.NewServeMux()
+	mux.Handle("/api/", app.Handler())
+	mux.Handle("/", static)
+	httpServer := &http.Server{Handler: admin.LocalOnly(mux), ReadHeaderTimeout: 5 * time.Second}
 	log.Printf("SOCKS5 listening on %s", listener.Addr())
+	log.Printf("management page listening on %s", httpListener.Addr())
 	server := &socks5.Server{Selector: router, OnUpstreamError: func(ref routing.Ref, err error) {
 		log.Printf("upstream %s/%s: %v", ref.ProviderID, ref.ProxyID, err)
 		if reportErr := manager.ReportConnectionError(ctx, ref); reportErr != nil {
 			log.Printf("schedule health recheck for %s/%s: %v", ref.ProviderID, ref.ProxyID, reportErr)
 		}
 	}}
-	serveCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	results := make(chan error, 2)
+	results := make(chan error, 3)
 	go func() { results <- manager.Run(serveCtx) }()
 	go func() { results <- server.Serve(serveCtx, listener) }()
+	go func() {
+		err := httpServer.Serve(httpListener)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		results <- err
+	}()
+	go func() {
+		<-serveCtx.Done()
+		shutdownCtx, stopShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopShutdown()
+		_ = httpServer.Shutdown(shutdownCtx)
+	}()
 	first := <-results
 	cancel()
 	second := <-results
+	third := <-results
 	if first != nil {
 		return first
 	}
-	return second
+	if second != nil {
+		return second
+	}
+	return third
 }
 
 func usage() error {
