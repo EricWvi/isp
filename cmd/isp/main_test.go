@@ -215,3 +215,21 @@ func TestServeProxyListenerCombinations(t *testing.T) {
 		})
 	}
 }
+
+func TestVersionFlagPrintsBuildVersion(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "isp")
+	build := exec.Command("go", "build", "-ldflags=-X main.version=v9.8.7", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, output)
+	}
+	output, err := exec.Command(binary, "--version").CombinedOutput()
+	if err != nil || string(output) != "v9.8.7\n" {
+		t.Fatalf("--version output %q, %v", output, err)
+	}
+}
+
+func TestVersionDefaultsToUnknown(t *testing.T) {
+	if version != "unknown" {
+		t.Fatalf("default version %q", version)
+	}
+}

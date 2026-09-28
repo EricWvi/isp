@@ -22,6 +22,10 @@ import (
 	"isp/internal/state"
 )
 
+// version is replaced at build time with -ldflags "-X main.version=<git tag>".
+// It must stay a variable because the linker cannot rewrite constants.
+var version = "unknown"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		slog.New(slog.NewJSONHandler(os.Stderr, nil)).Error("command failed", "error", err)
@@ -30,6 +34,10 @@ func main() {
 }
 
 func run(args []string) (runErr error) {
+	if len(args) == 1 && args[0] == "--version" {
+		fmt.Println(version)
+		return nil
+	}
 	if len(args) < 2 {
 		return usage()
 	}
@@ -241,5 +249,5 @@ func run(args []string) (runErr error) {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: isp <config-check|state-init|serve> <config.yaml> | isp <select|select-http> <config.yaml> <provider-id> <proxy-id> | isp <auto-switch|auto-switch-http> <config.yaml> <on|off>")
+	return fmt.Errorf("usage: isp --version | isp <config-check|state-init|serve> <config.yaml> | isp <select|select-http> <config.yaml> <provider-id> <proxy-id> | isp <auto-switch|auto-switch-http> <config.yaml> <on|off>")
 }

@@ -65,7 +65,7 @@ bash scripts/release.sh
 ./release/isp serve ./config.yaml
 ```
 
-发布脚本使用锁定的 npm 依赖先重建 `frontend/dist`，运行 Go 测试，再以 `CGO_ENABLED=0`、`-trimpath` 和固定空 build ID 编译 `release/isp`。发布时只需复制该可执行文件、自己的 YAML 配置和 SQLite 状态文件；运行时不需要 Node.js 或单独的前端目录。脚本按当前主机系统与架构编译，Linux 和 macOS 需分别执行。服务以 JSON 日志输出到标准错误；正常收到 SIGINT/SIGTERM 时停止接受新连接、关闭活动 SOCKS5 连接、等待 HTTP 请求退出并关闭数据库。管理配置已写入 YAML、但运行时更新失败时会报错退出，应先检查日志并重启以重新加载 YAML。
+发布脚本使用锁定的 npm 依赖先重建 `frontend/dist`，运行 Go 测试，再以 `CGO_ENABLED=0`、`-trimpath` 和固定空 build ID 编译 `release/isp`。`isp --version` 输出构建版本：发布脚本写入 `git describe --tags` 的结果，GitHub Release 写入对应 tag，直接 `go build` 或 `go run` 则显示 `unknown`。发布时只需复制该可执行文件、自己的 YAML 配置和 SQLite 状态文件；运行时不需要 Node.js 或单独的前端目录。脚本按当前主机系统与架构编译，Linux 和 macOS 需分别执行。服务以 JSON 日志输出到标准错误；正常收到 SIGINT/SIGTERM 时停止接受新连接、关闭活动 SOCKS5 连接、等待 HTTP 请求退出并关闭数据库。管理配置已写入 YAML、但运行时更新失败时会报错退出，应先检查日志并重启以重新加载 YAML。
 
 推送匹配 `v*` 的 tag 后，GitHub Actions 会重建前端、运行 Go 测试，并在同名 GitHub Release 中发布两个 Linux 可执行文件：`isp-proxy-linux-amd64` 和 `isp-proxy-linux-arm64`。它们已嵌入管理页面，无需在目标机器安装 Go 或 Node.js。
 

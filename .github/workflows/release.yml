@@ -28,11 +28,13 @@ jobs:
       - name: Test
         run: go test ./...
       - name: Build Linux binaries
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           mkdir -p release
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build \
-              -trimpath -buildvcs=false -ldflags=-buildid= \
+              -trimpath -buildvcs=false -ldflags="-buildid= -X main.version=$TAG" \
               -o "release/isp-proxy-linux-$arch" ./cmd/isp
           done
       - name: Publish release
